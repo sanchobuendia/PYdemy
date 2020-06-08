@@ -4,8 +4,21 @@
 
 > *__PYdemy__*: A mathematical modeling toolkit for building and evaluating epidemic disease models, with application to COVID-19 (submitted).
 
-In this folder we present the codes used to produce the modeling results that track the COVID-19 epidemic in Brazil, China, Italy, Portugal and the United States. Under the folder
-[dataset](PLOS_Comp_Biol_Paper/dataset), COVID-19 incidence data for these countries are presented (source: http://ourworldindata.org).
+
+# Installation
+
+At this time we are on beta relase version so to install Pydemy in your computer clone this repo
+
+```shell
+$ git clone https://github.com/ModelingTaskForce/PYdemy.git
+```
+and then run
+
+
+```shell
+$ cd Pydemy
+$ python setup.py install
+```
 
 
 # Team (alphabetically ordered)
