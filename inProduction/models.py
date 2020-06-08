@@ -5,6 +5,7 @@ Created on Tue Mar 24 09:18:44 2020
 
 @author: Rafael Veiga rafaelvalenteveiga@gmail.com
 @author: matheustorquato matheusft@gmail.com
+ADICIONAR OS OUTROS AUTORES
 """
 
 import matplotlib.pyplot as plt
@@ -14,13 +15,41 @@ import scipy.integrate as spi
 import pyswarms as ps
 from pyswarms.utils.plotters import plot_cost_history
 import pickle as pk
+from numbers import Number
 
 class Models:
     def __init__(self):
         self.isFit=False
         self.isBetaChange = False
+        self.isPredict = False
+        self.isCI = False
+    
+    def __validadeVar(var,name):
+        if len(var)<3:
+            print('\nthe '+name+' variable has les than 3 elements!\n')
+            return False
+        for n in var:
+            if not isinstance(n, Number):
+                print('\nthe elemente '+str(n)+' in '+name+' variable is not numeric!\n')
+                return False
+        if name=='y':
+            flag = False
+            if(var == sorted(var)): 
+                flag = True
+            if flag:
+                print('\nthe y is not sorted!\n')
+                return False
+        var.sort() 
+        if var[0]<0:
+            print('the '+ name + ' can not have negative  '+ str(var[0])+' value!')
+            return False
+        if name=='y' and var[0]==0:
+            print('the y can not have 0 value!')
+            return False
+        return True
+               
         
-    def __genBoot(self,series, times = 500):
+    def __genBoot(series, times = 500):
         series = np.diff(series)
         series = np.insert(series, 0, 1)
         series[series < 0] = 0
@@ -29,7 +58,7 @@ class Models:
             results.append(np.random.multinomial(n = sum(series), pvals = series/sum(series)))
         return np.array(results)
     
-    def __getConfidenceInterval(self, series, length, level):
+    def __getConfidenceInterval(series, length, level):
         series = np.array(series)
     
         #Compute mean value
@@ -45,7 +74,7 @@ class Models:
         #Compute CI
         lowerBound  = np.array(meanValue) + np.array(deltaL)
         UpperBound  = np.array(meanValue) + np.array(deltaU)
-        return [meanValue, lowerBound, UpperBound]
+        return (lowerBound, UpperBound)
         
     def getResiduosQuadatico(self):
         y = np.array(self.y)
@@ -150,7 +179,7 @@ class SIR:
             
             return S,I,R
     
-    def objectiveFunction(self,coef,x ,y,stand_error):
+    def __objectiveFunction(self,coef,x ,y,stand_error):
         tam2 = len(coef[:,0])
         soma = np.zeros(tam2)
         y = y*self.N
@@ -189,6 +218,8 @@ class SIR:
         
         bound => (lista_min_bound, lista_max_bound)
         '''
+        if not self.__validate(y):
+            return
         x = range(1,len(y)+1)
         self.isBetaChange = isBetaChange
         self.dayBetaChange = dayBetaChange
@@ -231,9 +262,9 @@ class SIR:
                 
         cost = pos = None
         if isBetaChange:
-            cost, pos = optimizer.optimize(self.objectiveFunction, itera, x = x,y=df,stand_error=stand_error,n_processes=self.numeroProcessadores)
+            cost, pos = optimizer.optimize(self.__objectiveFunction, itera, x = x,y=df,stand_error=stand_error,n_processes=self.numeroProcessadores)
         else:
-            cost, pos = optimizer.optimize(self.objectiveFunction, itera, x = x,y=df,stand_error=stand_error,n_processes=self.numeroProcessadores)
+            cost, pos = optimizer.optimize(self.__objectiveFunction, itera, x = x,y=df,stand_error=stand_error,n_processes=self.numeroProcessadores)
             self.beta = pos[0]
             self.gamma = pos[1]
         if isBetaChange:
@@ -246,14 +277,18 @@ class SIR:
                 self.dayBetaChange = dayBetaChange
         self.rmse = cost
         self.cost_history = optimizer.cost_history
+        self.isFit=True
             
     def predict(self,numDays):
         ''' x = dias passados do dia inicial 1'''
+        if numDays<0:
+            print('\nnumDays must be a positive number!\n')
+            return
         if self.isFit==False:
             print('\nModels is not fitted\n')
             return None
         x = range(1,len(self.y)+1+numDays) 
-        
+        self.predictNumDays = numDays
         if self.isBetaChange:
             S,I,R = self.__cal_EDO_2(x,self.beta1,self.gamma,self.beta2,self.dayBetaChange)
         else:
@@ -261,7 +296,8 @@ class SIR:
         self.ypred = I+R
         self.S = S
         self.I = I
-        self.R = R         
+        self.R = R
+        self.isPredict=True        
         return self.ypred
 
     def plot(self,local):
@@ -288,6 +324,76 @@ class SIR:
             plt.show()
         except:
             print("There is no predicted value")
+
+    def computeCI(self, times=500, level=0.95):
+        if self.isFit==False:
+            print('\nModels is not fitted\n')
+            return None
+        if self.isCI:
+            self.lypred = self.__getConfidenceInterval(self.__bypred, length, level)
+            self.lS = self.__getConfidenceInterval(self.__bS, length, level)
+            self.lI = self.__getConfidenceInterval(self.__bI, length, level)
+            self.lR = self.__getConfidenceInterval(self.__bR, length, level)
+        
+            if isBetaChange:
+                self.lDayBetaChange=self.__getConfidenceInterval(self.__bDayBetaChange, length, level)
+                self.lBeta1 = self.__getConfidenceInterval(self.__bBeta1, length, level)
+                self.lBeta2 = self.__getConfidenceInterval(self.__bBeta2, length, level)
+            else:
+                self.lBeta = self.__getConfidenceInterval(self.__bBeta, length, level)
+            
+            self.lGamma = self.__getConfidenceInterval(self.__bGamma, length, level)
+            
+        #Define empty lists to recive results
+        self.__bypred = []
+        self.__bS = []
+        self.__bI = []
+        self.__bR = []
+        
+        if isBetaChange:
+            self.__bDayBetaChange=[]
+            self.__bBeta1 = []
+            self.__bBeta2=[]
+        else:
+            self.__bBeta=[]
+            
+        self.__bGamma = []
+        
+        casesSeries = self.__genBoot(self.y, times)
+        
+        for i in range(0,len(casesSeries)):
+            self.fit(y = casesSeries[i], bound = self.bound ,stand_error=self.stand_error, isBetaChange=self.isBetaChange,dayBetaChange = self.dayBetaChange,particles=self.particles,itera=self.itera,c1=self.c1,c2= self.c2, w= self.w,k=self.k,p=self.p)
+            if self.isPredict:
+                self.predict(self.predictNumDays)
+            else:
+                self.predict(0)
+
+            self.__bypred.append(self.ypred)
+            self.__bS.append(self.S)
+            self.__bI.append(self.I)
+            self.__bR.append(self.R)
+            if isBetaChange:
+                self.__bbeta1.append(self.beta1)
+                self.__bbeta2.append(self.beta2)
+                self.__bDayBetaChange.append(self.dayBetaChange)
+            else:
+                self.__bbeta.append(self.beta)
+            self.__bgamma.append(self.gamma)            
+        
+        self.lypred = self.__getConfidenceInterval(self.__bypred, length, level)
+        self.lS = self.__getConfidenceInterval(self.__bS, length, level)
+        self.lI = self.__getConfidenceInterval(self.__bI, length, level)
+        self.lR = self.__getConfidenceInterval(self.__bR, length, level)
+        
+        if isBetaChange:
+            self.lDayBetaChange=self.__getConfidenceInterval(self.__bDayBetaChange, length, level)
+            self.lBeta1 = self.__getConfidenceInterval(self.__bBeta1, length, level)
+            self.lBeta2 = self.__getConfidenceInterval(self.__bBeta2, length, level)
+        else:
+            self.lBeta = self.__getConfidenceInterval(self.__bBeta, length, level)
+            
+        self.lGamma = self.__getConfidenceInterval(self.__bGamma, length, level)
+        self.isCI=True
 
 class SEIR:
     ''' SIR Model'''
@@ -405,6 +511,9 @@ class SEIR:
         
         bound => (lista_min_bound, lista_max_bound)
         '''
+        
+        if not self.__validate(y):
+            return
         x = range(1,len(y)+1)
         self.y = y
         self.I0 = np.array(y[0])/self.N
@@ -494,14 +603,18 @@ class SEIR:
 
         self.rmse = cost
         self.cost_history = optimizer.cost_history
+        self.isFit=True
             
     def predict(self,numDays):
         ''' x = dias passados do dia inicial 1'''
+        if numDays<0:
+            print('\nnumDays must be a positive number!\n')
+            return
         if self.isFit==False:
             print('\nModels is not fitted\n')
             return None
         x = range(1,len(self.y)+1+numDays)
-        
+        self.predictNumDays = numDays
         if self.isBetaChange:
             S,E,I,R = self.__cal_EDO_2(x,self.beta1,self.beta2,self.dayBetaChange,self.gamma,self.mu,self.sigma)
         else:
@@ -510,7 +623,8 @@ class SEIR:
         self.S = S
         self.E = E
         self.I = I
-        self.R = R         
+        self.R = R
+        self.isPredict=True        
         return self.ypred
 
     def plot(self,local):
@@ -533,75 +647,75 @@ class SEIR:
         if self.isFit==False:
             print('\nModels is not fitted\n')
             return None
-        #Define empty lists to recive results
-        self.__lypred = []
-        self.__lspred = []
-        self.__lepred = []
-        self.__lipred = []
-        self.__lrpred = []
-        if self.isBetaChange:
-            self.__lbeta1 = []
-            self.__lbeta2 = []
-        else:
-            self.__lbeta=[]
+        if self.isCI:
+            self.lypred = self.__getConfidenceInterval(self.__bypred, length, level)
+            self.lS = self.__getConfidenceInterval(self.__bS, length, level)
+            self.lE = self.__getConfidenceInterval(self.__bE, length, level)
+            self.lI = self.__getConfidenceInterval(self.__bI, length, level)
+            self.lR = self.__getConfidenceInterval(self.__bR, length, level)
         
-        self.__lgammaH = []
-        self.__lgammaU = []
-        self.__ldelta = []
-        self.__le0 = []
-        self.__lia0 = []
-        self.__lis0 = []
-
-        self.y = self.y[np.argsort(self.y)]
-        self.d = self.d[np.argsort(self.d)]
+            if isBetaChange:
+                self.lDayBetaChange=self.__getConfidenceInterval(self.__bDayBetaChange, length, level)
+                self.lBeta1 = self.__getConfidenceInterval(self.__bBeta1, length, level)
+                self.lBeta2 = self.__getConfidenceInterval(self.__bBeta2, length, level)
+            else:
+                self.lBeta = self.__getConfidenceInterval(self.__bBeta, length, level)
+            
+            self.lGamma = self.__getConfidenceInterval(self.__bGamma, length, level)
+            
+        #Define empty lists to recive results
+        self.__bypred = []
+        self.__bS = []
+        self.__bE = []
+        self.__bI = []
+        self.__bR = []
+        
+        if isBetaChange:
+            self.__bDayBetaChange=[]
+            self.__bBeta1 = []
+            self.__bBeta2=[]
+        else:
+            self.__bBeta=[]
+            
+        self.__bGamma = []
+        
         casesSeries = self.__genBoot(self.y, times)
-        deathSeries = self.__genBoot(self.d, times)
+        
         for i in range(0,len(casesSeries)):
-            super().fit(x = range(1,len(self.y) + 1),
-                        y = casesSeries[i],
-                        d = deathSeries[i])
-            super().predict(self.x)
+            self.fit(y = casesSeries[i], bound = self.bound ,stand_error=self.stand_error, isBetaChange=self.isBetaChange,dayBetaChange = self.dayBetaChange,particles=self.particles,itera=self.itera,c1=self.c1,c2= self.c2, w= self.w,k=self.k,p=self.p)
+            if self.isPredict:
+                self.predict(self.predictNumDays)
+            else:
+                self.predict(0)
 
-            self.__lypred.append(self.ypred)
-            self.__ldpred.append(self.dpred)
-            self.__lhpred.append(self.H)
-            self.__lupred.append(self.U)
-            self.__lspred.append(self.S)
-            self.__lepred.append(self.E)
-            self.__lrpred.append(self.R)
-            self.__lIA.append(self.IA)
-            self.__lIS.append(self.IS)
-
-            self.__lbeta1.append(self.beta1)
-            self.__lbeta2.append(self.beta2)
-            self.__lgammaH.append(self.gammaH)
-            self.__lgammaU.append(self.gammaU)
-            self.__ldelta.append(self.delta)
-            self.__le0.append(self.e0)
-            self.__lia0.append(self.ia0)
-            self.__lis0.append(self.is0)
-            self.ciResults = {}
-        for i, serie in zip([self.__lypred, self.__ldpred, self.__lhpred, self.__lupred, self.__lspred, 
-                  self.__lepred, self.__lrpred, self.__lIA, self.__lIS],
-                  ["ypred", "dpred", "hpred", "upred", "spred",
-                   "epred", "dpred", "IA", "IS"]):
-            meanValue, lb, ub = self.__getConfidenceInterval(i,len(i[0]))
-            self.ciResults.update({serie: {"meanValue":meanValue,
-                 "lb": lb,
-                 "ub": ub}})
-
-
-        #return df with parameters
-        self.parameters = pd.DataFrame.from_dict({
-            "beta1": self.__lbeta1,
-            "beta2": self.__lbeta2,
-            "gammaH": self.__lgammaH,
-            "gammaU": self.__lgammaU,
-            "delta": self.__ldelta,
-            "e0": self.__le0,
-            "a0": self.__lia0,
-            "is0": self.__lis0
-        })
+            self.__bypred.append(self.ypred)
+            self.__bS.append(self.S)
+            self.__bE.append(self.E)
+            self.__bI.append(self.I)
+            self.__bR.append(self.R)
+            if isBetaChange:
+                self.__bbeta1.append(self.beta1)
+                self.__bbeta2.append(self.beta2)
+                self.__bDayBetaChange.append(self.dayBetaChange)
+            else:
+                self.__bbeta.append(self.beta)
+            self.__bgamma.append(self.gamma)            
+        
+        self.lypred = self.__getConfidenceInterval(self.__bypred, length, level)
+        self.lS = self.__getConfidenceInterval(self.__bS, length, level)
+        self.lE = self.__getConfidenceInterval(self.__bE, length, level)
+        self.lI = self.__getConfidenceInterval(self.__bI, length, level)
+        self.lR = self.__getConfidenceInterval(self.__bR, length, level)
+        
+        if isBetaChange:
+            self.lDayBetaChange=self.__getConfidenceInterval(self.__bDayBetaChange, length, level)
+            self.lBeta1 = self.__getConfidenceInterval(self.__bBeta1, length, level)
+            self.lBeta2 = self.__getConfidenceInterval(self.__bBeta2, length, level)
+        else:
+            self.lBeta = self.__getConfidenceInterval(self.__bBeta, length, level)
+            
+        self.lGamma = self.__getConfidenceInterval(self.__bGamma, length, level)
+        self.isCI=True
     
 class SEIRHUD(Models):
     ''' SEIRHU Model'''
@@ -609,6 +723,7 @@ class SEIRHUD(Models):
         super(SEIRHUD,self).__init__()
         self.N = tamanhoPop
         self.numeroProcessadores = numeroProcessadores
+        self.isRT=False
     
     def __cal_EDO(self,x,beta,gammaH,gammaU,delta,h,ia0,is0,e0):
             ND = len(x)-1
@@ -691,37 +806,49 @@ class SEIRHUD(Models):
             
             return S,E,IA,IS,H,U,R,D,Nw
     
-    def objectiveFunction(self,coef,x ,y,d,stand_error):
+    def __objectiveFunction(self,coef,x ,y,d,hos,u,stand_error):
         tam2 = len(coef[:,0])
         soma = np.zeros(tam2)
         if stand_error:
             if (self.isBetaChange) & (self.dayBetaChange==None):
                 for i in range(tam2):
                     S,E,IA,IS,H,U,R,D,Nw = self.__cal_EDO_2(x,coef[i,0],coef[i,1],coef[i,2],coef[i,3],coef[i,4],coef[i,5],coef[i,6],coef[i,7],coef[i,8],coef[i,9])
-                    soma[i]= (((y-(Nw))/np.sqrt(Nw+1))**2).mean()*(1-self.pesoMorte)+(((d-(D))/np.sqrt(D+1))**2).mean()*self.pesoMorte
+                    soma[i]= (((y-(Nw))/np.sqrt(Nw+1))**2).mean()*self.yWeight +(((d-(D))/np.sqrt(D+1))**2).mean()*self.dWeight
+                    soma[i] = (soma[i] + (((hos-(H))/np.sqrt(H+1))**2).mean()*self.hosWeight) if hos else soma[i]
+                    soma[i] = (soma[i] + (((u-(U))/np.sqrt(U+1))**2).mean()*self.uWeight) if u else soma[i]
             elif self.isBetaChange:
                 for i in range(tam2):
                     S,E,IA,IS,H,U,R,D,Nw = self.__cal_EDO_2(x,coef[i,0],coef[i,1],coef[i,2],self.dayBetaChange,coef[i,3],coef[i,4],coef[i,5],coef[i,6],coef[i,7],coef[i,8])
                     soma[i]= (((y-(Nw))/np.sqrt(Nw+1))**2).mean()*(1-self.pesoMorte)+(((d-(D))/np.sqrt(D+1))**2).mean()*self.pesoMorte
+                    soma[i] = (soma[i] + (((hos-(H))/np.sqrt(H+1))**2).mean()*self.hosWeight) if hos else soma[i]
+                    soma[i] = (soma[i] + (((u-(U))/np.sqrt(U+1))**2).mean()*self.uWeight) if u else soma[i]
             else:
                 for i in range(tam2):
                     S,E,IA,IS,H,U,R,D,Nw = self.__cal_EDO(x,coef[i,0],coef[i,1],coef[i,2],coef[i,3],coef[i,4],coef[i,5],coef[i,6],coef[i,7])
                     soma[i]= (((y-(Nw))/np.sqrt(Nw+1))**2).mean()*(1-self.pesoMorte)+(((d-(D))/np.sqrt(D+1))**2).mean()*self.pesoMorte
+                    soma[i] = (soma[i] + (((hos-(H))/np.sqrt(H+1))**2).mean()*self.hosWeight) if hos else soma[i]
+                    soma[i] = (soma[i] + (((u-(U))/np.sqrt(U+1))**2).mean()*self.uWeight) if u else soma[i]
         else:
             if (self.isBetaChange) & (self.dayBetaChange==None):
                 for i in range(tam2):
                     S,E,IA,IS,H,U,R,D,Nw = self.__cal_EDO_2(x,coef[i,0],coef[i,1],coef[i,2],coef[i,3],coef[i,4],coef[i,5],coef[i,6],coef[i,7],coef[i,8],coef[i,9])
                     soma[i]= ((y-(Nw))**2).mean()*(1-self.pesoMorte)+((d-(D))**2).mean()*self.pesoMorte
+                    soma[i] = (soma[i] + ((hos-(H))**2).mean()*self.hosWeight) if hos else soma[i]
+                    soma[i] = (soma[i] + ((u-(U))**2).mean()*self.uWeight) if u else soma[i]
             elif self.isBetaChange:
                 for i in range(tam2):
                     S,E,IA,IS,H,U,R,D,Nw = self.__cal_EDO_2(x,coef[i,0],coef[i,1],coef[i,2],self.dayBetaChange,coef[i,3],coef[i,4],coef[i,5],coef[i,6],coef[i,7],coef[i,8])
                     soma[i]= ((y-(Nw))**2).mean()*(1-self.pesoMorte)+((d-(D))**2).mean()*self.pesoMorte
+                    soma[i] = (soma[i] + ((hos-(H))**2).mean()*self.hosWeight) if hos else soma[i]
+                    soma[i] = (soma[i] + ((u-(U))**2).mean()*self.uWeight) if u else soma[i]
             else:
                 for i in range(tam2):
                     S,E,IA,IS,H,U,R,D,Nw = self.__cal_EDO(x,coef[i,0],coef[i,1],coef[i,2],coef[i,3],coef[i,4],coef[i,5],coef[i,6],coef[i,7])
                     soma[i]= ((y-(Nw))**2).mean()*(1-self.pesoMorte)+((d-(D))**2).mean()*self.pesoMorte
+                    soma[i] = (soma[i] + ((hos-(H))**2).mean()*self.hosWeight) if hos else soma[i]
+                    soma[i] = (soma[i] + ((u-(U))**2).mean()*self.uWeight) if u else soma[i]
         return soma
-    def fit(self, y, d, pesoMorte = 0.5, kappa = 1/4,p = 0.2,gammaA = 1/3.5, gammaS = 1/4.001, muH = 0.15,
+    def fit(self, y, d, hos=None,u=None,yWeight=1,dWeight = 1,hosWeight=1,uWeight=1, kappa = 1/4,p = 0.2,gammaA = 1/3.5, gammaS = 1/4.001, muH = 0.15,
             muU = 0.4,xi = 0.53,omegaU = 0.29,omegaH=0.14 , bound = [[0,1/8,1/12,0,0],[2,1/4,1/3,0.7,0.35]],
             stand_error = True, isBetaChange = False, dayBetaChange = None, particles = 300, itera = 1000, c1 = 0.1, c2 = 0.3, w = 0.9, k = 5, norm = 2):
         '''
@@ -730,9 +857,28 @@ class SEIRHUD(Models):
         
         bound => (lista_min_bound, lista_max_bound)
         '''
+        if not self.__validate(y):
+            return
+        if not self.__validate(d):
+            return
+        if hos:
+            if not self.__validate(hos):
+                return
+        if u:
+            if not self.__validate(u):
+                return
+            
         if len(y)!=len(d):
             print('\ny and d must have the same length\n')
             return
+        if hos:
+            if len(y)!=len(hos):
+                print('\ny and hos must have the same length\n')
+                return
+        if u:
+            if len(y)!=len(u):
+                print('\ny and u must have the same length\n')
+                return 
         x = range(1,len(y)+1)
         
         if len(bound)==2:
@@ -745,7 +891,10 @@ class SEIRHUD(Models):
                 bound[1].append(10/self.N)
                 bound[1].append(10/self.N)
                 bound[1].append(10/self.N)
-        self.pesoMorte = pesoMorte
+        self.yWeight = yWeight
+        self.dWeight = dWeight
+        self.hosWeight = hosWeight
+        self.uWeight = uWeight
         self.kappa = kappa
         self.p = p
         self.gammaA = gammaA
@@ -762,6 +911,8 @@ class SEIRHUD(Models):
         self.x = x
         df = np.array(y)
         dd = np.array(d)
+        dhos = np.array(hos)
+        du = np.array(u)
         options = {'c1': c1, 'c2': c2, 'w': w,'k':k,'p':norm}
         optimizer = None
         if bound==None:
@@ -797,10 +948,10 @@ class SEIRHUD(Models):
         #__cal_EDO_2(self,x,beta1,beta2,tempo,gammaH,gammaU,delta,h,ia0,is0,e0)
         if isBetaChange:
             #cost, pos = optimizer.optimize(self.objectiveFunction,itera, x = x,y=df,d=dd,stand_error=stand_error,n_processes=self.numeroProcessadores, verbose = True)
-            cost, pos = optimizer.optimize(self.objectiveFunction,itera, x = x,y=df,d=dd,stand_error=stand_error,n_processes=self.numeroProcessadores)
+            cost, pos = optimizer.optimize(self.__objectiveFunction,itera, x = x,y=df,d=dd,hos=dhos,u=du,stand_error=stand_error,n_processes=self.numeroProcessadores)
         else:
             #cost, pos = optimizer.optimize(self.objectiveFunction, itera, x = x,y=df,d=dd,stand_error=stand_error,n_processes=self.numeroProcessadores, verbose = True)
-            cost, pos = optimizer.optimize(self.objectiveFunction, itera, x = x,y=df,d=dd,stand_error=stand_error,n_processes=self.numeroProcessadores)
+            cost, pos = optimizer.optimize(self.__objectiveFunction, itera, x = x,y=df,d=dd,hos=dhos,u=du,stand_error=stand_error,n_processes=self.numeroProcessadores)
             self.beta = pos[0]
             self.gammaH = pos[1]
             self.gammaU = pos[2]
@@ -837,11 +988,15 @@ class SEIRHUD(Models):
 
     def predict(self,numDays):
         ''' x = dias passados do dia inicial 1'''
+        if numDays<0:
+            print('\nnumDays must be a positive number!\n')
+            return
         if self.isFit==False:
             print('\nModels is not fitted\n')
             return None
-        x = range(1,len(self.y)+1+numDays)   
-        self.x = x
+        x = range(1,len(self.y)+1+numDays) 
+        self.predictNumDays = numDays
+        
         if self.isBetaChange:
             S,E,IA,IS,H,U,R,D,Nw = self.__cal_EDO_2(x,self.beta1,self.beta2,self.dayBetaChange,self.gammaH,self.gammaU,self.delta,self.h,self.ia0,self.is0,self.e0)
         else:
@@ -854,42 +1009,45 @@ class SEIRHUD(Models):
         self.IS = IS
         self.H = H
         self.U = U
-        self.R = R         
+        self.R = R
+        self.isPredict=True         
         return self.ypred
 
-#Auxiliary functions to compute R(t)
-#(Fjj - Fii)
-    def __prod(self, i, F):
-        P = 1
-        for j in range(0, len(F)):
-            if i != j:
-                P = P * (F[j] - F[i])
-        return P
-##compute g(x)
-    def __gx(self, x, F):
-        g = 0
-        for i in range(len(F)):
-            if 0 != self.__prod(i, F): 
-                g += np.exp(-F[i]*x)/self.__prod(i, F)
-        g = np.prod(F) * g
-        return g
-
-#Integral b(t-x)g(x) dx
-    def __int(self, b, t, F):
-        res = 0
-        for x in range(t+1):
-            res += b[t - x] * self.__gx(x, F)
-        return res
-
 #Compute R(t)
-    def Rt(self, cummulativeCases, date, cutoof):
+    def Rt(self, cutoof):
+        #Auxiliary functions to compute R(t)
+        #(Fjj - Fii)
         if self.isFit==False:
             print('\nModels is not fitted\n')
             return None
-        date = date
-        cummulativeCases.index = date 
-        cummulativeCases = cummulativeCases[np.argsort(cummulativeCases)]
+        
+        def __prod(i, F):
+            P = 1
+            for j in range(0, len(F)):
+                    if i != j:
+                        P = P * (F[j] - F[i])
+            return P
+        ##compute g(x)
+        def __gx(x, F):
+            g = 0
+            for i in range(len(F)):
+                if 0 != self.__prod(i, F): 
+                    g += np.exp(-F[i]*x)/__prod(i, F)
+            g = np.prod(F) * g
+            return g
+        #Integral b(t-x)g(x) dx
+        def __int( b, t, F):
+            res = 0
+            for x in range(t+1):
+                res += b[t - x] * __gx(x, F)
+            return res
+        
+        if self.isFit==False:
+            print('\nModels is not fitted\n')
+            return None
+        
 
+        cummulativeCases = np.array(self.y)
         #using cummulative cases
         cummulativeCases = np.diff(cummulativeCases[:len(cummulativeCases) + 1])
         #Defining the F matrix array
@@ -900,8 +1058,8 @@ class SEIRHUD(Models):
             for t in range(0,len(cummulativeCases)):
                 res.append(cummulativeCases[t]/self.__int(cummulativeCases, t, F))
             self.rt = pd.Series(np.array(res))
-            self.rt.index  = np.sort(date.iloc[1:])
             idx_start = np.searchsorted(np.cumsum(cummulativeCases),cutoof)
+            self.isRT=True
             return(self.rt.iloc[idx_start:])
         except:
             return("Model must be fitted before R(t) could be computed")
@@ -947,78 +1105,125 @@ class SEIRHUD(Models):
         if self.isFit==False:
             print('\nModels is not fitted\n')
             return None
+        if self.isCI:
+            self.lypred = self.__getConfidenceInterval(self.__bypred, length, level)
+            self.ldpred = self.__getConfidenceInterval(self.__bdpred, length, level)
+            self.lH = self.__getConfidenceInterval(self.__bH, length, level)
+            self.lS = self.__getConfidenceInterval(self.__bS, length, level)
+            self.lE = self.__getConfidenceInterval(self.__bE, length, level)
+            self.lR = self.__getConfidenceInterval(self.__bR, length, level)
+            self.lH = self.__getConfidenceInterval(self.__bH, length, level)
+            self.lU = self.__getConfidenceInterval(self.__bU, length, level)
+            self.lIA = self.__getConfidenceInterval(self.__bIA, length, level)
+            self.lIS = self.__getConfidenceInterval(self.__bIS, length, level)
+        
+            if isBetaChange:
+                self.lDayBetaChange=self.__getConfidenceInterval(self.__bDayBetaChange, length, level)
+                self.lBeta1 = self.__getConfidenceInterval(self.__bBeta1, length, level)
+                self.lBeta2 = self.__getConfidenceInterval(self.__bBeta2, length, level)
+            else:
+                self.lBeta = self.__getConfidenceInterval(self.__bBeta, length, level)
+            
+            self.lGammaH = self.__getConfidenceInterval(self.__bGammaH, length, level)
+            self.lGammaU = self.__getConfidenceInterval(self.__bGammaU, length, level)
+            self.lDelta = self.__getConfidenceInterval(self.__bDelta, length, level)
+            self.le0 = self.__getConfidenceInterval(self.__be0, length, level)
+            self.lia0 = self.__getConfidenceInterval(self.__bia0, length, level)
+            self.lis0 = self.__getConfidenceInterval(self.__bis0, length, level)
+            
         #Define empty lists to recive results
-        self.__lypred = []
-        self.__ldpred = []
-        self.__lspred = []
-        self.__lepred = []
-        self.__lrpred = []
-        self.__lhpred = []
-        self.__lupred = []
-        self.__lIA = []
-        self.__lt1 = []
-        self.__lIS = []
-        self.__lbeta1 = []
-        self.__lbeta2 = []
-        self.__lgammaH = []
-        self.__lgammaU = []
-        self.__ldelta = []
-        self.__le0 = []
-        self.__lia0 = []
-        self.__lis0 = []
+        self.__bypred = []
+        self.__bdpred = []
+        self.__bS = []
+        self.__bE = []
+        self.__bR = []
+        self.__bH = []
+        self.__bU = []
+        self.__bIA = []
+        self.__bIS = []
+        if isBetaChange:
+            self.__bDayBetaChange=[]
+            self.__bBeta1 = []
+            self.__bBeta2=[]
+        else:
+            self.__bBeta=[]
+            
+        self.__bGammaH = []
+        self.__bGammaU = []
+        self.__bDelta = []
+        self.__be0 = []
+        self.__bia0 = []
+        self.__bis0 = []
 
-        self.y = self.y[np.argsort(self.y)]
-        self.d = self.d[np.argsort(self.d)]
+        
         casesSeries = self.__genBoot(self.y, times)
         deathSeries = self.__genBoot(self.d, times)
+        hosSeries = self.__genBoot(self.hos,times) if self.hos else None
+        uSeries = self.__genBoot(self.u,times) if self.u else None
+        
         for i in range(0,len(casesSeries)):
-            super().fit(x = range(1,len(self.y) + 1),
-                        y = casesSeries[i],
-                        d = deathSeries[i])
-            super().predict(0)
-
-            self.__lypred.append(self.ypred)
-            self.__ldpred.append(self.dpred)
-            self.__lhpred.append(self.H)
-            self.__lupred.append(self.U)
-            self.__lspred.append(self.S)
-            self.__lepred.append(self.E)
-            self.__lrpred.append(self.R)
-            self.__lIA.append(self.IA)
-            self.__lIS.append(self.IS)
-
-            self.__lbeta1.append(self.beta1)
-            self.__lbeta2.append(self.beta2)
-            self.__lgammaH.append(self.gammaH)
-            self.__lgammaU.append(self.gammaU)
-            self.__ldelta.append(self.delta)
-            self.__le0.append(self.e0)
-            self.__lia0.append(self.ia0)
-            self.__lis0.append(self.is0)
-            self.ciResults = {}
-        for i, serie in zip([self.__lypred, self.__ldpred, self.__lhpred, self.__lupred, self.__lspred, 
-                  self.__lepred, self.__lrpred, self.__lIA, self.__lIS],
-                  ["ypred", "dpred", "hpred", "upred", "spred",
-                   "epred", "dpred", "IA", "IS"]):
-            meanValue, lb, ub = self.__getConfidenceInterval(i,len(i[0]))
-            self.ciResults.update({serie: {"meanValue":meanValue,
-                 "lb": lb,
-                 "ub": ub}})
-
-
-        #return df with parameters
-        self.parameters = pd.DataFrame.from_dict({
-            "beta1": self.__lbeta1,
-            "beta2": self.__lbeta2,
-            "gammaH": self.__lgammaH,
-            "gammaU": self.__lgammaU,
-            "delta": self.__ldelta,
-            "e0": self.__le0,
-            "a0": self.__lia0,
-            "is0": self.__lis0
-        })
-
-    
+            self.fit(y = casesSeries[i],
+                        d = deathSeries[i],
+                        hos=hosSeries[i],
+                        u = uSeries[i],
+                        yWeight=self.yWeight,dWeight = self.dWeight,hosWeight=self.hosWeight,uWeight=self.uWeight,
+                        kappa = self.kappa,p = self.p,gammaA = self.gammaA, gammaS = self.gammaS, muH = self.muH,muU = self.muU,xi = self.xi,omegaU = self.omegaU,omegaH=self.omegaH , bound = self.bound,
+                        stand_error = self.stand_error, isBetaChange = self.isBetaChange, dayBetaChange = self.dayBetaChange, particles = self.particles, itera = self.itera, c1 = self.c1, c2 = self.c2, w = self.w, k = self.k, norm = self.norm)
+            
+            if self.isPredict:
+                self.predict(self.predictNumDays)
+            else:
+                self.predict(0)
+            self.__bypred.append(self.ypred)
+            self.__bdpred.append(self.dpred)
+            self.__bH.append(self.H)
+            self.__bU.append(self.U)
+            self.__bS.append(self.S)
+            self.__bE.append(self.E)
+            self.__bR.append(self.R)
+            self.__bIA.append(self.IA)
+            self.__bIS.append(self.IS)
+            if isBetaChange:
+                self.__bbeta1.append(self.beta1)
+                self.__bbeta2.append(self.beta2)
+                self.__bDayBetaChange.append(self.dayBetaChange)
+            else:
+                self.__bbeta.append(self.beta)
+            self.__bgammaH.append(self.gammaH)
+            self.__bgammaU.append(self.gammaU)
+            self.__bdelta.append(self.delta)
+            self.__be0.append(self.e0)
+            self.__bia0.append(self.ia0)
+            self.__bis0.append(self.is0)
+            
+        
+        self.lypred = self.__getConfidenceInterval(self.__bypred, length, level)
+        self.ldpred = self.__getConfidenceInterval(self.__bdpred, length, level)
+        self.lH = self.__getConfidenceInterval(self.__bH, length, level)
+        self.lS = self.__getConfidenceInterval(self.__bS, length, level)
+        self.lE = self.__getConfidenceInterval(self.__bE, length, level)
+        self.lR = self.__getConfidenceInterval(self.__bR, length, level)
+        self.lH = self.__getConfidenceInterval(self.__bH, length, level)
+        self.lU = self.__getConfidenceInterval(self.__bU, length, level)
+        self.lIA = self.__getConfidenceInterval(self.__bIA, length, level)
+        self.lIS = self.__getConfidenceInterval(self.__bIS, length, level)
+        
+        if isBetaChange:
+            self.lDayBetaChange=self.__getConfidenceInterval(self.__bDayBetaChange, length, level)
+            self.lBeta1 = self.__getConfidenceInterval(self.__bBeta1, length, level)
+            self.lBeta2 = self.__getConfidenceInterval(self.__bBeta2, length, level)
+        else:
+            self.lBeta = self.__getConfidenceInterval(self.__bBeta, length, level)
+            
+        self.lGammaH = self.__getConfidenceInterval(self.__bGammaH, length, level)
+        self.lGammaU = self.__getConfidenceInterval(self.__bGammaU, length, level)
+        self.lDelta = self.__getConfidenceInterval(self.__bDelta, length, level)
+        self.le0 = self.__getConfidenceInterval(self.__be0, length, level)
+        self.lia0 = self.__getConfidenceInterval(self.__bia0, length, level)
+        self.lis0 = self.__getConfidenceInterval(self.__bis0, length, level)
+        
+        self.isCI=True
+        
 
 
 
