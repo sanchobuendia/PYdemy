@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 """
 Created on Tue Mar 24 09:18:44 2020
-
 @author: Rafael Veiga rafaelvalenteveiga@gmail.com
 @author: matheustorquato matheusft@gmail.com
 ADICIONAR OS OUTROS AUTORES
@@ -16,15 +15,22 @@ import pyswarms as ps
 from pyswarms.utils.plotters import plot_cost_history
 import pickle as pk
 from numbers import Number
+import copy
+import matplotlib.gridspec as gridspec
+from datetime import date, timedelta
+
 
 class Models:
-    def __init__(self):
+    def __init__(self,popSize,nCores=None):
         self.isFit=False
         self.isBetaChange = False
         self.isPredict = False
         self.isCI = False
+        self.isRT = False
+        self.N = popSize
+        self.nCores = nCores
     
-    def __validadeVar(var,name):
+    def __validadeVar(self,var,name):
         if len(var)<3:
             print('\nthe '+name+' variable has les than 3 elements!\n')
             return False
@@ -33,13 +39,16 @@ class Models:
                 print('\nthe elemente '+str(n)+' in '+name+' variable is not numeric!\n')
                 return False
         if name=='y':
-            flag = False
-            if(var == sorted(var)): 
-                flag = True
+            flag = 0
+            i = 1
+            while i < len(var): 
+                if(var[i] < var[i - 1]): 
+                    flag = 1
+                i += 1
             if flag:
                 print('\nthe y is not sorted!\n')
                 return False
-        var.sort() 
+        var = sorted(var) 
         if var[0]<0:
             print('the '+ name + ' can not have negative  '+ str(var[0])+' value!')
             return False
@@ -49,7 +58,7 @@ class Models:
         return True
                
         
-    def __genBoot(series, times = 500):
+    def __genBoot(self, series, times = 500):
         series = np.diff(series)
         series = np.insert(series, 0, 1)
         series[series < 0] = 0
@@ -58,9 +67,9 @@ class Models:
             results.append(np.random.multinomial(n = sum(series), pvals = series/sum(series)))
         return np.array(results)
     
-    def __getConfidenceInterval(series, length, level):
+    def __getConfidenceInterval(self, series, level):
         series = np.array(series)
-    
+        length = len(series[0])
         #Compute mean value
         meanValue = [np.mean(series[:,i]) for i in range(0,length)]
 
@@ -85,7 +94,7 @@ class Models:
         d = d[0:len(self.x)]
         ypred = ypred[0:len(self.x)]
         dpred = dpred[0:len(self.x)]
-        return ((y - ypred)**2)*(1-self.pesoMorte) + ((d-dpred)**2)*self.pesoMorte
+        return ((y - ypred)**2)*(1-self.yWeight) + ((d-dpred)**2)*self.yWeight
 
     def getReQuadPadronizado(self):
         y = np.array(self.y)
@@ -96,7 +105,7 @@ class Models:
         d = d[0:len(self.x)]
         ypred = ypred[0:len(self.x)]
         dpred = dpred[0:len(self.x)]
-        return (((y - ypred)**2)/np.sqrt(ypred+1))*(1-self.pesoMorte) + (((d-dpred)**2)/np.sqrt(dpred+1))*self.pesoMorte
+        return (((y - ypred)**2)/np.sqrt(ypred+1))*(1-self.yWeight) + (((d-dpred)**2)/np.sqrt(dpred+1))*self.yWeight
     
     def plotCost(self):
         if self.isFit:
@@ -115,12 +124,18 @@ class Models:
         model = pk.load(file)
         return model
 
-class SIR:
+class SIR(Models):
     ''' SIR Model'''
-    def __init__(self,tamanhoPop,numeroProcessadores=None):
-        super(SIR,self).__init__()
-        self.N = tamanhoPop
-        self.numeroProcessadores = numeroProcessadores
+    
+    def getR0(self):
+        if self.isFit:
+            if self.isBetaChange:
+                return self.beta1/self.gamma
+            else:
+                return self.beta/self.gamma
+        else:
+            print("\nThe models is not fitted!\n")
+            return None
     
     def __cal_EDO(self,x,beta,gamma):
             ND = len(x)-1
@@ -180,9 +195,9 @@ class SIR:
             return S,I,R
     
     def __objectiveFunction(self,coef,x ,y,stand_error):
+        
         tam2 = len(coef[:,0])
         soma = np.zeros(tam2)
-        y = y*self.N
         if stand_error:
             if (self.isBetaChange) & (self.dayBetaChange==None):
                 for i in range(tam2):
@@ -210,7 +225,8 @@ class SIR:
                     S,I,R = self.__cal_EDO(x,coef[i,0],coef[i,1])
                     soma[i]= (((y-(I+R)))**2).mean()
         return soma
-    def fit(self, y , bound = ([0,1/21],[1,1/5]),stand_error=True, isBetaChange=False, dayBetaChange = None,particles=50,itera=500,c1= 0.5, c2= 0.3, w = 0.9, k=3,p=1):
+    
+    def fit(self, y , bound = ([0,1/21],[1,1/5]),stand_error=True, isBetaChange=False, dayBetaChange = None,particles=50,itera=500,c1= 0.5, c2= 0.3, w = 0.9, k=3,norm=1):
         '''
         x = dias passados do dia inicial 1
         y = numero de casos
@@ -218,18 +234,29 @@ class SIR:
         
         bound => (lista_min_bound, lista_max_bound)
         '''
-        if not self.__validate(y):
+       
+        if not self._Models__validadeVar(y,'y'):
             return
         x = range(1,len(y)+1)
         self.isBetaChange = isBetaChange
         self.dayBetaChange = dayBetaChange
         self.y = y
         self.x = x
-        df = np.array(y)/self.N
+        self.bound = bound
+        self.stand_error = stand_error
+        self.particles = particles
+        self.itera = itera
+        self.c1 = c1
+        self.c2 = c2
+        self.w = w
+        self.k = k
+        self.norm = norm
+        
+        df = np.array(y)
         self.I0 = df[0]
         self.S0 = 1-self.I0
         self.R0 = 0
-        options = {'c1': c1, 'c2': c2, 'w': w,'k':k,'p':p}
+        options = {'c1': c1, 'c2': c2, 'w': w,'k':k,'p':norm}
         optimizer = None
         if bound==None:
             if (isBetaChange) & (dayBetaChange==None):
@@ -261,12 +288,11 @@ class SIR:
                 optimizer = ps.single.LocalBestPSO(n_particles=particles, dimensions=2, options=options,bounds=bound)
                 
         cost = pos = None
+        self.bound = bound
         if isBetaChange:
-            cost, pos = optimizer.optimize(self.__objectiveFunction, itera, x = x,y=df,stand_error=stand_error,n_processes=self.numeroProcessadores)
+            cost, pos = optimizer.optimize(self.__objectiveFunction, itera, x = x,y=df,stand_error=stand_error,n_processes=self.nCores)
         else:
-            cost, pos = optimizer.optimize(self.__objectiveFunction, itera, x = x,y=df,stand_error=stand_error,n_processes=self.numeroProcessadores)
-            self.beta = pos[0]
-            self.gamma = pos[1]
+            cost, pos = optimizer.optimize(self.__objectiveFunction, itera, x = x,y=df,stand_error=stand_error,n_processes=self.nCores)
         if isBetaChange:
             self.beta1 = pos[0]
             self.gamma = pos[1]
@@ -275,9 +301,13 @@ class SIR:
                 self.dayBetaChange = pos[3]
             else:
                 self.dayBetaChange = dayBetaChange
+        else:
+            self.beta = pos[0]
+            self.gamma = pos[1]
         self.rmse = cost
         self.cost_history = optimizer.cost_history
         self.isFit=True
+        
             
     def predict(self,numDays):
         ''' x = dias passados do dia inicial 1'''
@@ -300,15 +330,386 @@ class SIR:
         self.isPredict=True        
         return self.ypred
 
-    def plot(self,local):
-        ypred = self.predict(self.x)
-        plt.plot(ypred,c='b',label='Predição Infectados')
-        plt.plot(self.y,c='r',marker='o', markersize=3,label='Infectados')
-        plt.legend(fontsize=15)
-        plt.title('Dinâmica do CoviD19 - {}'.format(local),fontsize=20)
-        plt.ylabel('Casos COnfirmados',fontsize=15)
-        plt.xlabel('Dias',fontsize=15)
+    def ArangePlots(self,CompartmentPlots):
+        
+        PlotList=[]
+        LabelList=[]
+        for i in CompartmentPlots:
+        
+            if i=='S':
+                PlotList.append(self.S)
+                LabelList.append('Susceptible individuals')
+            # elif i=='E':
+            #     PlotList.append(self.E)
+            #     LabelList.append('Exposed individuals')
+            elif i=='I':
+                PlotList.append(self.I)
+                LabelList.append('Infected individuals')
+            elif i=='R':
+                PlotList.append(self.R)
+                LabelList.append('Recovered individuals')
+            # elif i=='IA':
+            #     PlotList.append(self.IA)
+            #     LabelList.append('Asymptomatic individuals')
+            # elif i=='IS':
+            #     PlotList.append(self.IS)
+            #     LabelList.append('Symptomatic individuals')
+            # elif i=='H':
+            #     PlotList.append(self.H)
+            #     LabelList.append('Clinic ocupation')
+            # elif i=='U':
+            #     PlotList.append(self.U)
+            #     LabelList.append('ICU ocupation')
+            # elif i=='D':
+            #     PlotList.append(self.D)
+            #     LabelList.append('Cumulative deaths')
+            # elif i=='dD':
+            #     PlotList.append(np.diff(self.D))
+            #     LabelList.append('New deaths')
+            elif i=='Y':
+                PlotList.append(self.ypred)
+                LabelList.append('Cumulative cases')
+            elif i=='dY':
+                PlotList.append(np.diff(self.ypred))
+                LabelList.append('New cases')
+            else:
+                print('\nThere is no compartment such as "'+str(i)+'" in the model.\n')
+               
+        return PlotList,LabelList
+        
+
+    def plot(self,local=None,InitialDate=None,CompartmentPlots=None,SaveFile=None):
+        
+        if self.isPredict==False:
+            self.predict(0)
+        
+        
+        
+
+        if InitialDate != None:
+            initial_date=date(int(InitialDate[0:4]), int(InitialDate[5:7]), int(InitialDate[8:11]))
+
+
+            dates = []
+            dates.append(initial_date.strftime('%Y-%m-%d'))  
+
+            for i in range(len(self.ypred)-1):
+                d=initial_date + timedelta(days=i)
+                dates.append(d.strftime('%Y-%m-%d'))  
+
+        else:
+            dates=np.arange(len(self.ypred))
+       
+        
+        #Plotting
+        
+        if CompartmentPlots==None:
+            
+            fig, ax = plt.subplots(figsize=(17,10))
+            ax.grid(which='major', axis='both', color='black',linewidth=1.,alpha=0.3)
+
+
+            ax.plot(dates,self.ypred,'b-', linewidth=2.5,label='Model')
+
+            ax.scatter(dates[:len( self.y)], self.y,  s=18,color='black',label='Reported data',zorder=3)
+
+
+            if self.isBetaChange == True:
+            
+                ax.axvline(self.dayBetaChange, 0, 600,c='r',linestyle='--',label='Beta change')
+
+         ##################
+    
+    
+    
+    
+    
+            box = ax.get_position()
+            ax.set_position([box.x0, box.y0, box.width*0.65, box.height])
+            legend_x = 1
+            legend_y = 0.5
+
+
+
+        
+
+            ax.tick_params(labelsize=14)
+            ax.legend(loc='center left', bbox_to_anchor=(legend_x, legend_y),fontsize=18)
+
+            
+                
+            ax.set_ylabel('Confirmed cases',fontsize=15)
+        
+            if InitialDate != None:
+                ax.set_xlabel('Days',fontsize=15)
+    
+    
+            ax.xaxis.set_major_locator(plt.MaxNLocator(9))
+            plt.setp(ax.get_xticklabels(), rotation=25)
+
+
+            for tick in ax.get_xticklabels():
+                tick.set_fontname("Arial")
+            for tick in ax.get_yticklabels():
+                tick.set_fontname("Arial")  
+        
+        
+                    
+            if local == None:
+                fig.suptitle('Model predictions',fontsize=24)
+            else:
+                fig.suptitle('Model predictions - '+ local,fontsize=24)
+                
+        elif len(CompartmentPlots)==1:
+        
+            PlotList,LabelList= self.ArangePlots(CompartmentPlots)
+            
+            fig, ax = plt.subplots(figsize=(17,10))
+            ax.grid(which='major', axis='both', color='black',linewidth=1.,alpha=0.3)
+
+
+            ax.plot(dates[:len(PlotList[0])],PlotList[0],'b-', linewidth=2.5,label='Model')
+
+            if CompartmentPlots[0]=='Y':
+                ax.scatter(dates[:len( self.y)], self.y,  s=18,color='black',label='Reported data',zorder=3)
+            elif CompartmentPlots[0]=='dY':
+                ax.scatter(dates[:len( self.y)-1], np.diff(self.y),  s=18,color='black',label='Reported data',zorder=3)
+
+            if self.isBetaChange == True:
+            
+                ax.axvline(self.dayBetaChange, 0, 600,c='r',linestyle='--',label='Beta Change')
+
+         ##################
+    
+    
+    
+    
+    
+            box = ax.get_position()
+            ax.set_position([box.x0, box.y0, box.width*0.65, box.height])
+            legend_x = 1
+            legend_y = 0.5
+
+
+
+        
+
+            ax.tick_params(labelsize=14)
+            ax.legend(loc='center left', bbox_to_anchor=(legend_x, legend_y),fontsize=18)
+
+    
+                
+            ax.set_ylabel(LabelList[0],fontsize=15)
+        
+            if InitialDate == None:
+                ax.set_xlabel('Days',fontsize=15)
+    
+    
+            ax.xaxis.set_major_locator(plt.MaxNLocator(9))
+            plt.setp(ax.get_xticklabels(), rotation=25)
+
+
+            for tick in ax.get_xticklabels():
+                tick.set_fontname("Arial")
+            for tick in ax.get_yticklabels():
+                tick.set_fontname("Arial")  
+        
+                    
+            if local == None:
+                fig.suptitle('Model predictions',fontsize=24)
+            else:
+                fig.suptitle('Model predictions - '+ local,fontsize=24)
+        
+        else:
+            
+            color=['blue','red','green','darkviolet','orange','darkblue']
+            
+            
+            PlotList,LabelList= self.ArangePlots(CompartmentPlots)
+            
+            
+            if len(CompartmentPlots)==2:
+           #Criar um grid para as figuras usando GridSpec
+                gs = gridspec.GridSpec(nrows = 1, ncols = 4)
+
+        #Definir o tamanho do plot que sera usado para cada plot individula tem o mesmo efieto de quando passado para subplot
+                fig=plt.figure(figsize=(2*15.4,10))
+
+        #Definir espaco em branco entre os plots
+                gs.update(wspace = 0.55)
+                gs.update(hspace = 0.55)
+
+                ax=[]
+        #Criar o layout onde os plots serao gerados. E nessa parte que se define o grid
+                ax1 = plt.subplot(gs[0, :2]) #Ininicar um plot em branco no centro da primeira linha (0)
+                ax2 = plt.subplot(gs[0, 2:])  #Ininicar um plot em branco na primeira posicao da segunda linha
+            
+                ax.append(ax1)
+                ax.append(ax2)
+
+            if len(CompartmentPlots)==3:
+           #Criar um grid para as figuras usando GridSpec
+                gs = gridspec.GridSpec(nrows = 2, ncols = 4)
+
+        #Definir o tamanho do plot que sera usado para cada plot individula tem o mesmo efieto de quando passado para subplot
+                fig=plt.figure(figsize=(2*15.4,2*10))
+
+        #Definir espaco em branco entre os plots
+                gs.update(wspace = 0.55)
+                gs.update(hspace = 0.55)
+
+                ax=[]
+        #Criar o layout onde os plots serao gerados. E nessa parte que se define o grid
+                ax1 = plt.subplot(gs[0, 1:3]) #Ininicar um plot em branco no centro da primeira linha (0)
+                ax2 = plt.subplot(gs[1, :2])  #Ininicar um plot em branco na primeira posicao da segunda linha
+                ax3 = plt.subplot(gs[1, 2:])
+                
+                ax.append(ax1)
+                ax.append(ax2)
+                ax.append(ax3)
+
+            if len(CompartmentPlots)==4:
+           #Criar um grid para as figuras usando GridSpec
+                gs = gridspec.GridSpec(nrows = 2, ncols = 4)
+
+        #Definir o tamanho do plot que sera usado para cada plot individula tem o mesmo efieto de quando passado para subplot
+                fig=plt.figure(figsize=(2*15.4,2*10))
+
+        #Definir espaco em branco entre os plots
+                gs.update(wspace = 0.55)
+                gs.update(hspace = 0.55)
+
+                ax=[]
+        #Criar o layout onde os plots serao gerados. E nessa parte que se define o grid
+                ax1 = plt.subplot(gs[0, :2]) #Ininicar um plot em branco no centro da primeira linha (0)
+                ax2 = plt.subplot(gs[0, 2:])  #Ininicar um plot em branco na primeira posicao da segunda linha
+                ax3 = plt.subplot(gs[1, :2])
+                ax4 = plt.subplot(gs[1, 2:])
+                
+                ax.append(ax1)
+                ax.append(ax2)
+                ax.append(ax3)
+                ax.append(ax4)
+            
+            if len(CompartmentPlots)==5:
+           #Criar um grid para as figuras usando GridSpec
+                gs = gridspec.GridSpec(nrows = 3, ncols = 4)
+
+        #Definir o tamanho do plot que sera usado para cada plot individula tem o mesmo efieto de quando passado para subplot
+                fig=plt.figure(figsize=(2*15.4,3*10))
+
+        #Definir espaco em branco entre os plots
+                gs.update(wspace = 0.55)
+                gs.update(hspace = 0.55)
+
+                ax=[]
+        #Criar o layout onde os plots serao gerados. E nessa parte que se define o grid
+                ax1 = plt.subplot(gs[0, 1:3]) #Ininicar um plot em branco no centro da primeira linha (0)
+                ax2 = plt.subplot(gs[1, :2])  #Ininicar um plot em branco na primeira posicao da segunda linha
+                ax3 = plt.subplot(gs[1, 2:])
+                ax4 = plt.subplot(gs[2, :2])
+                ax5 = plt.subplot(gs[2, 2:])
+                
+                ax.append(ax1)
+                ax.append(ax2)
+                ax.append(ax3)
+                ax.append(ax4)
+                ax.append(ax5)
+ 
+
+            if len(CompartmentPlots)==6:
+           #Criar um grid para as figuras usando GridSpec
+                gs = gridspec.GridSpec(nrows = 3, ncols = 4)
+
+        #Definir o tamanho do plot que sera usado para cada plot individula tem o mesmo efieto de quando passado para subplot
+                fig=plt.figure(figsize=(2*15.4,3*10))
+
+        #Definir espaco em branco entre os plots
+                gs.update(wspace = 0.55)
+                gs.update(hspace = 0.55)
+
+                ax=[]
+        #Criar o layout onde os plots serao gerados. E nessa parte que se define o grid
+                ax1 = plt.subplot(gs[0, :2]) #Ininicar um plot em branco no centro da primeira linha (0)
+                ax2 = plt.subplot(gs[0, 2:])  #Ininicar um plot em branco na primeira posicao da segunda linha
+                ax3 = plt.subplot(gs[1, :2])
+                ax4 = plt.subplot(gs[1, 2:]) #Ininicar um plot em branco no centro da primeira linha (0)
+                ax5 = plt.subplot(gs[2, :2])  #Ininicar um plot em branco na primeira posicao da segunda linha
+                ax6 = plt.subplot(gs[2, 2:])
+                
+                
+                ax.append(ax1)
+                ax.append(ax2)
+                ax.append(ax3)
+                ax.append(ax4)
+                ax.append(ax5)
+                ax.append(ax6)
+ 
+  
+          
+            for k in range(len(ax)):
+                
+            
+
+                ax[k].grid(which='major', axis='both', color='black',linewidth=1.,alpha=0.3)
+
+
+                ax[k].plot(dates[:len(PlotList[k])],PlotList[k],color=color[k], linewidth=2.5,label='Model')
+
+                if CompartmentPlots[k]=='Y':
+                    ax[k].scatter(dates[:len( self.y)], self.y,  s=18,color='black',label='Reported data',zorder=3)
+                elif CompartmentPlots[k]=='dY':
+                    ax[k].scatter(dates[:len( self.y)-1], np.diff(self.y),  s=18,color='black',label='Reported data',zorder=3)
+
+                if self.isBetaChange == True:
+            
+                    ax[k].axvline(self.dayBetaChange, 0, 600,c='r',linestyle='--',label='Beta Change')
+
+             ##################
+    
+
+
+        
+
+                ax[k].tick_params(labelsize=22)
+                #ax[k].legend(loc='center left', bbox_to_anchor=(legend_x, legend_y),fontsize=18)
+
+    
+    
+                
+            
+            
+                ax[k].set_ylabel(LabelList[k],fontsize=25)
+        
+                if InitialDate == None:
+                    ax[k].set_xlabel('Days',fontsize=25)
+    
+    
+                ax[k].xaxis.set_major_locator(plt.MaxNLocator(9))
+                plt.setp(ax[k].get_xticklabels(), rotation=25)
+
+
+                for tick in ax[k].get_xticklabels():
+                    tick.set_fontname("Arial")
+                for tick in ax[k].get_yticklabels():
+                    tick.set_fontname("Arial")  
+        
+        
+    
+            if local == None:
+                fig.suptitle('Model predictions',fontsize=35)
+            else:
+                fig.suptitle('Model predictions - '+ local,fontsize=35)
+                
+            
+
+        if SaveFile != None:
+            fig.savefig(SaveFile,bbox_inches='tight')
+        
         plt.show()
+
+
+
     def getCoef(self):
         if self.isBetaChange:
             return ['beta1','beta2','gamma','dayBetaChange'],[self.beta1,self.beta2,self.gamma,self.dayBetaChange]
@@ -330,19 +731,19 @@ class SIR:
             print('\nModels is not fitted\n')
             return None
         if self.isCI:
-            self.lypred = self.__getConfidenceInterval(self.__bypred, length, level)
-            self.lS = self.__getConfidenceInterval(self.__bS, length, level)
-            self.lI = self.__getConfidenceInterval(self.__bI, length, level)
-            self.lR = self.__getConfidenceInterval(self.__bR, length, level)
+            self.lypred = self._Models__getConfidenceInterval(self.__bypred, level)
+            self.lS = self._Models__getConfidenceInterval(self.__bS, level)
+            self.lI = self._Models__getConfidenceInterval(self.__bI, level)
+            self.lR = self._Models__getConfidenceInterval(self.__bR, level)
         
-            if isBetaChange:
-                self.lDayBetaChange=self.__getConfidenceInterval(self.__bDayBetaChange, length, level)
-                self.lBeta1 = self.__getConfidenceInterval(self.__bBeta1, length, level)
-                self.lBeta2 = self.__getConfidenceInterval(self.__bBeta2, length, level)
+            if self.isBetaChange:
+                self.lDayBetaChange=self._Models__getConfidenceInterval(self.__bDayBetaChange, level)
+                self.lBeta1 = self._Models__getConfidenceInterval(self.__bBeta1, level)
+                self.lBeta2 = self._Models__getConfidenceInterval(self.__bBeta2, level)
             else:
-                self.lBeta = self.__getConfidenceInterval(self.__bBeta, length, level)
+                self.lBeta = self._Models__getConfidenceInterval(self.__bBeta, level)
             
-            self.lGamma = self.__getConfidenceInterval(self.__bGamma, length, level)
+            self.lGamma = self._Models__getConfidenceInterval(self.__bGamma, level)
             
         #Define empty lists to recive results
         self.__bypred = []
@@ -350,7 +751,7 @@ class SIR:
         self.__bI = []
         self.__bR = []
         
-        if isBetaChange:
+        if self.isBetaChange:
             self.__bDayBetaChange=[]
             self.__bBeta1 = []
             self.__bBeta2=[]
@@ -359,48 +760,54 @@ class SIR:
             
         self.__bGamma = []
         
-        casesSeries = self.__genBoot(self.y, times)
-        
+        casesSeries = self._Models__genBoot(self.y, times)
+        copia = copy.deepcopy(self)
         for i in range(0,len(casesSeries)):
-            self.fit(y = casesSeries[i], bound = self.bound ,stand_error=self.stand_error, isBetaChange=self.isBetaChange,dayBetaChange = self.dayBetaChange,particles=self.particles,itera=self.itera,c1=self.c1,c2= self.c2, w= self.w,k=self.k,p=self.p)
+            copia.fit(y = casesSeries[i], bound = self.bound ,stand_error=self.stand_error, isBetaChange=self.isBetaChange,dayBetaChange = self.dayBetaChange,particles=self.particles,itera=self.itera,c1=self.c1,c2= self.c2, w= self.w,k=self.k,norm=self.norm)
             if self.isPredict:
-                self.predict(self.predictNumDays)
+                copia.predict(self.predictNumDays)
             else:
-                self.predict(0)
+                copia.predict(0)
 
-            self.__bypred.append(self.ypred)
-            self.__bS.append(self.S)
-            self.__bI.append(self.I)
-            self.__bR.append(self.R)
-            if isBetaChange:
-                self.__bbeta1.append(self.beta1)
-                self.__bbeta2.append(self.beta2)
-                self.__bDayBetaChange.append(self.dayBetaChange)
+            self.__bypred.append(copia.ypred)
+            self.__bS.append(copia.S)
+            self.__bI.append(copia.I)
+            self.__bR.append(copia.R)
+            if self.isBetaChange:
+                self.__bbeta1.append(copia.beta1)
+                self.__bbeta2.append(copia.beta2)
+                self.__bDayBetaChange.append(copia.dayBetaChange)
             else:
-                self.__bbeta.append(self.beta)
-            self.__bgamma.append(self.gamma)            
+                self.__bbeta.append(copia.beta)
+            self.__bgamma.append(copia.gamma)            
         
-        self.lypred = self.__getConfidenceInterval(self.__bypred, length, level)
-        self.lS = self.__getConfidenceInterval(self.__bS, length, level)
-        self.lI = self.__getConfidenceInterval(self.__bI, length, level)
-        self.lR = self.__getConfidenceInterval(self.__bR, length, level)
+        self.lypred = self._Models__getConfidenceInterval(self.__bypred, level)
+        self.lS = self._Models__getConfidenceInterval(self.__bS, level)
+        self.lI = self._Models__getConfidenceInterval(self.__bI, level)
+        self.lR = self._Models__getConfidenceInterval(self.__bR, level)
         
-        if isBetaChange:
-            self.lDayBetaChange=self.__getConfidenceInterval(self.__bDayBetaChange, length, level)
-            self.lBeta1 = self.__getConfidenceInterval(self.__bBeta1, length, level)
-            self.lBeta2 = self.__getConfidenceInterval(self.__bBeta2, length, level)
+        if self.isBetaChange:
+            self.lDayBetaChange=self._Models__getConfidenceInterval(self.__bDayBetaChange, level)
+            self.lBeta1 = self._Models__getConfidenceInterval(self.__bBeta1, level)
+            self.lBeta2 = self._Models__getConfidenceInterval(self.__bBeta2, level)
         else:
-            self.lBeta = self.__getConfidenceInterval(self.__bBeta, length, level)
+            self.lBeta = self._Models__getConfidenceInterval(self.__bBeta, level)
             
-        self.lGamma = self.__getConfidenceInterval(self.__bGamma, length, level)
+        self.lGamma = self._Models__getConfidenceInterval(self.__bGamma, level)
         self.isCI=True
 
-class SEIR:
+class SEIR(Models):
     ''' SIR Model'''
-    def __init__(self,tamanhoPop,numeroProcessadores=None):
-        super(SEIR,self).__init__()
-        self.N = tamanhoPop
-        self.numeroProcessadores = numeroProcessadores
+    
+    def getR0(self):
+        if self.isFit:
+            if self.isBetaChange:
+                return self.beta1/self.gamma
+            else:
+                return self.beta/self.gamma
+        else:
+            print("\nThe models is not fitted!\n")
+            return None
     
     def __cal_EDO(self,x,beta,gamma,mu,sigma):
             ND = len(x)-1
@@ -503,7 +910,7 @@ class SEIR:
         return soma
     
 
-    def fit(self, y , bound = ([0,1/7,1/6],[1.5,1/4,1/4]) ,stand_error=True, isBetaChange=True,dayBetaChange = None,particles=50,itera=500,c1=0.3,c2= 0.3, w= 0.9,k=3,p=2):
+    def fit(self, y , bound = ([0,1/7,1/6],[1.5,1/4,1/4]) ,stand_error=True, isBetaChange=True,dayBetaChange = None,particles=50,itera=500,c1=0.3,c2= 0.3, w= 0.9,k=3,norm=2):
         '''
         x = dias passados do dia inicial 1
         y = numero de casos
@@ -512,43 +919,32 @@ class SEIR:
         bound => (lista_min_bound, lista_max_bound)
         '''
         
-        if not self.__validate(y):
+        if not self._Models__validadeVar(y,'y'):
             return
         x = range(1,len(y)+1)
         self.y = y
+        dy = np.array(y)
+        self.x = x
         self.I0 = np.array(y[0])/self.N
         self.S0 = 1-self.I0
         self.R0 = 0
         self.E0 = 0
         self.mu = 1/(75.51*365)
-        # options = {'c1': 0.5, 'c2': 0.3, 'w': 0.9}
-        # if bound==None:
-        #     optimizer = ps.single.GeneralOptimizerPSO(n_particles=50, dimensions=3, options=options,topology=Star())
-        #     cost, pos = optimizer.optimize(self.__objectiveFunction, 500, x = x,y=y,mu=1/(75.51*365),n_processes=self.numeroProcessadores)
-        #     self.beta = pos[0]
-        #     self.gamma = pos[1]
-        #     self.mu = 1/(75.51*365)
-        #     self.sigma = pos[2]
-        #     self.x = x
-        #     self.rmse = cost
-        #     self.optimize = optimizer
-            
-        # else:
-        #     optimizer = ps.single.GeneralOptimizerPSO(n_particles=50, dimensions=3, options=options,bounds=bound,topology=Star())
-        #     cost, pos = optimizer.optimize(self.__objectiveFunction, 500, x = x,y=y,mu=1/(75.51*365),n_processes=self.numeroProcessadores)
-        #     self.beta = pos[0]
-        #     self.gamma = pos[1]
-        #     self.mu = 1/(75.51*365)
-        #     self.sigma = pos[2]
-        #     self.x = x
-        #     self.rmse = cost
-        #     self.optimize = optimizer
+
         self.isBetaChange = isBetaChange
         self.dayBetaChange = dayBetaChange
-        self.y = y
-        self.x = x
+        
+        self.stand_error = stand_error
+        self.particles = particles
+        self.itera = itera
+        self.c1 = c1
+        self.c2 = c2
+        self.w = w
+        self.k = k
+        self.norm = norm
 
-        options = {'c1': c1, 'c2': c2, 'w': w,'k':k,'p':p}
+
+        options = {'c1': c1, 'c2': c2, 'w': w,'k':k,'p':norm}
         optimizer = None
         
         if bound==None:
@@ -580,13 +976,11 @@ class SEIR:
                 optimizer = ps.single.LocalBestPSO(n_particles=particles, dimensions=3, options=options,bounds=bound)
                 
         cost = pos = None
+        self.bound = bound
         if isBetaChange:
-            cost, pos = optimizer.optimize(self.__objectiveFunction, itera, x = x,y=y,stand_error=stand_error,n_processes=self.numeroProcessadores)
+            cost, pos = optimizer.optimize(self.__objectiveFunction, itera, x = x,y=dy,stand_error=stand_error,n_processes=self.nCores)
         else:
-            cost, pos = optimizer.optimize(self.__objectiveFunction, itera, x = x,y=y,stand_error=stand_error,n_processes=self.numeroProcessadores)
-            self.beta = pos[0]
-            self.gamma = pos[1]
-            self.sigma = pos[2]
+            cost, pos = optimizer.optimize(self.__objectiveFunction, itera, x = x,y=dy,stand_error=stand_error,n_processes=self.nCores)
             
         if isBetaChange:
             self.beta1 = pos[0]
@@ -600,6 +994,12 @@ class SEIR:
                 self.dayBetaChange = dayBetaChange
                 self.gamma = pos[2]
                 self.sigma = pos[3]
+            
+        else:
+            self.beta = pos[0]
+            self.gamma = pos[1]
+            self.sigma = pos[2]
+            
 
         self.rmse = cost
         self.cost_history = optimizer.cost_history
@@ -627,15 +1027,367 @@ class SEIR:
         self.isPredict=True        
         return self.ypred
 
-    def plot(self,local):
-        ypred = self.predict(self.x)
-        plt.plot(ypred,c='b',label='Predição Infectados')
-        plt.plot(self.y,c='r',marker='o', markersize=3,label='Infectados')
-        plt.legend(fontsize=15)
-        plt.title('Dinâmica do CoviD19 - {}'.format(local),fontsize=20)
-        plt.ylabel('Casos COnfirmados',fontsize=15)
-        plt.xlabel('Dias',fontsize=15)
+    def ArangePlots(self,CompartmentPlots):
+        
+        PlotList=[]
+        LabelList=[]
+        for i in CompartmentPlots:
+        
+            if i=='S':
+                PlotList.append(self.S)
+                LabelList.append('Susceptible individuals')
+            elif i=='E':
+                PlotList.append(self.E)
+                LabelList.append('Exposed individuals')
+            elif i=='I':
+                PlotList.append(self.I)
+                LabelList.append('Infected individuals')
+            elif i=='R':
+                PlotList.append(self.R)
+                LabelList.append('Recovered individuals')
+            elif i=='Y':
+                PlotList.append(self.ypred)
+                LabelList.append('Cumulative cases')
+            elif i=='dY':
+                PlotList.append(np.diff(self.ypred))
+                LabelList.append('New cases')
+            else:
+                print('\nThere is no compartment such as "'+str(i)+'" in the model.\n')
+               
+        return PlotList,LabelList
+        
+
+    def plot(self,local=None,InitialDate=None,CompartmentPlots=None,SaveFile=None):
+        
+        if self.isPredict==False:
+            self.predict(0)
+        
+        
+        
+
+        if InitialDate != None:
+            initial_date=date(int(InitialDate[0:4]), int(InitialDate[5:7]), int(InitialDate[8:11]))
+
+
+            dates = []
+            dates.append(initial_date.strftime('%Y-%m-%d'))  
+
+            for i in range(len(self.ypred)-1):
+                d=initial_date + timedelta(days=i)
+                dates.append(d.strftime('%Y-%m-%d'))  
+
+        else:
+            dates=np.arange(len(self.ypred))
+       
+        
+        #Plotting
+        
+        if CompartmentPlots==None:
+            
+            fig, ax = plt.subplots(figsize=(17,10))
+            ax.grid(which='major', axis='both', color='black',linewidth=1.,alpha=0.3)
+
+
+            ax.plot(dates,self.ypred,'b-', linewidth=2.5,label='Model')
+
+            ax.scatter(dates[:len( self.y)], self.y,  s=18,color='black',label='Reported data',zorder=3)
+
+
+            if self.isBetaChange == True:
+            
+                ax.axvline(self.dayBetaChange, 0, 600,c='r',linestyle='--',label='Beta change')
+
+         ##################
+    
+    
+    
+    
+    
+            box = ax.get_position()
+            ax.set_position([box.x0, box.y0, box.width*0.65, box.height])
+            legend_x = 1
+            legend_y = 0.5
+
+
+
+        
+
+            ax.tick_params(labelsize=14)
+            ax.legend(loc='center left', bbox_to_anchor=(legend_x, legend_y),fontsize=18)
+
+            
+                
+            ax.set_ylabel('Confirmed cases',fontsize=15)
+        
+            if InitialDate != None:
+                ax.set_xlabel('Days',fontsize=15)
+    
+    
+            ax.xaxis.set_major_locator(plt.MaxNLocator(9))
+            plt.setp(ax.get_xticklabels(), rotation=25)
+
+
+            for tick in ax.get_xticklabels():
+                tick.set_fontname("Arial")
+            for tick in ax.get_yticklabels():
+                tick.set_fontname("Arial")  
+        
+        
+                    
+            if local == None:
+                fig.suptitle('Model predictions',fontsize=24)
+            else:
+                fig.suptitle('Model predictions - '+ local,fontsize=24)
+                
+        elif len(CompartmentPlots)==1:
+        
+            PlotList,LabelList= self.ArangePlots(CompartmentPlots)
+            
+            fig, ax = plt.subplots(figsize=(17,10))
+            ax.grid(which='major', axis='both', color='black',linewidth=1.,alpha=0.3)
+
+
+            ax.plot(dates[:len(PlotList[0])],PlotList[0],'b-', linewidth=2.5,label='Model')
+
+            if CompartmentPlots[0]=='Y':
+                ax.scatter(dates[:len( self.y)], self.y,  s=18,color='black',label='Reported data',zorder=3)
+            elif CompartmentPlots[0]=='dY':
+                ax.scatter(dates[:len( self.y)-1], np.diff(self.y),  s=18,color='black',label='Reported data',zorder=3)
+
+            if self.isBetaChange == True:
+            
+                ax.axvline(self.dayBetaChange, 0, 600,c='r',linestyle='--',label='Beta Change')
+
+         ##################
+    
+    
+    
+    
+    
+            box = ax.get_position()
+            ax.set_position([box.x0, box.y0, box.width*0.65, box.height])
+            legend_x = 1
+            legend_y = 0.5
+
+
+
+        
+
+            ax.tick_params(labelsize=14)
+            ax.legend(loc='center left', bbox_to_anchor=(legend_x, legend_y),fontsize=18)
+
+    
+                
+            ax.set_ylabel(LabelList[0],fontsize=15)
+        
+            if InitialDate == None:
+                ax.set_xlabel('Days',fontsize=15)
+    
+    
+            ax.xaxis.set_major_locator(plt.MaxNLocator(9))
+            plt.setp(ax.get_xticklabels(), rotation=25)
+
+
+            for tick in ax.get_xticklabels():
+                tick.set_fontname("Arial")
+            for tick in ax.get_yticklabels():
+                tick.set_fontname("Arial")  
+        
+                    
+            if local == None:
+                fig.suptitle('Model predictions',fontsize=24)
+            else:
+                fig.suptitle('Model predictions - '+ local,fontsize=24)
+        
+        else:
+            
+            color=['blue','red','green','darkviolet','orange','darkblue']
+            
+            
+            PlotList,LabelList= self.ArangePlots(CompartmentPlots)
+            
+            
+            if len(CompartmentPlots)==2:
+           #Criar um grid para as figuras usando GridSpec
+                gs = gridspec.GridSpec(nrows = 1, ncols = 4)
+
+        #Definir o tamanho do plot que sera usado para cada plot individula tem o mesmo efieto de quando passado para subplot
+                fig=plt.figure(figsize=(2*15.4,10))
+
+        #Definir espaco em branco entre os plots
+                gs.update(wspace = 0.55)
+                gs.update(hspace = 0.55)
+
+                ax=[]
+        #Criar o layout onde os plots serao gerados. E nessa parte que se define o grid
+                ax1 = plt.subplot(gs[0, :2]) #Ininicar um plot em branco no centro da primeira linha (0)
+                ax2 = plt.subplot(gs[0, 2:])  #Ininicar um plot em branco na primeira posicao da segunda linha
+            
+                ax.append(ax1)
+                ax.append(ax2)
+
+            if len(CompartmentPlots)==3:
+           #Criar um grid para as figuras usando GridSpec
+                gs = gridspec.GridSpec(nrows = 2, ncols = 4)
+
+        #Definir o tamanho do plot que sera usado para cada plot individula tem o mesmo efieto de quando passado para subplot
+                fig=plt.figure(figsize=(2*15.4,2*10))
+
+        #Definir espaco em branco entre os plots
+                gs.update(wspace = 0.55)
+                gs.update(hspace = 0.55)
+
+                ax=[]
+        #Criar o layout onde os plots serao gerados. E nessa parte que se define o grid
+                ax1 = plt.subplot(gs[0, 1:3]) #Ininicar um plot em branco no centro da primeira linha (0)
+                ax2 = plt.subplot(gs[1, :2])  #Ininicar um plot em branco na primeira posicao da segunda linha
+                ax3 = plt.subplot(gs[1, 2:])
+                
+                ax.append(ax1)
+                ax.append(ax2)
+                ax.append(ax3)
+
+            if len(CompartmentPlots)==4:
+           #Criar um grid para as figuras usando GridSpec
+                gs = gridspec.GridSpec(nrows = 2, ncols = 4)
+
+        #Definir o tamanho do plot que sera usado para cada plot individula tem o mesmo efieto de quando passado para subplot
+                fig=plt.figure(figsize=(2*15.4,2*10))
+
+        #Definir espaco em branco entre os plots
+                gs.update(wspace = 0.55)
+                gs.update(hspace = 0.55)
+
+                ax=[]
+        #Criar o layout onde os plots serao gerados. E nessa parte que se define o grid
+                ax1 = plt.subplot(gs[0, :2]) #Ininicar um plot em branco no centro da primeira linha (0)
+                ax2 = plt.subplot(gs[0, 2:])  #Ininicar um plot em branco na primeira posicao da segunda linha
+                ax3 = plt.subplot(gs[1, :2])
+                ax4 = plt.subplot(gs[1, 2:])
+                
+                ax.append(ax1)
+                ax.append(ax2)
+                ax.append(ax3)
+                ax.append(ax4)
+            
+            if len(CompartmentPlots)==5:
+           #Criar um grid para as figuras usando GridSpec
+                gs = gridspec.GridSpec(nrows = 3, ncols = 4)
+
+        #Definir o tamanho do plot que sera usado para cada plot individula tem o mesmo efieto de quando passado para subplot
+                fig=plt.figure(figsize=(2*15.4,3*10))
+
+        #Definir espaco em branco entre os plots
+                gs.update(wspace = 0.55)
+                gs.update(hspace = 0.55)
+
+                ax=[]
+        #Criar o layout onde os plots serao gerados. E nessa parte que se define o grid
+                ax1 = plt.subplot(gs[0, 1:3]) #Ininicar um plot em branco no centro da primeira linha (0)
+                ax2 = plt.subplot(gs[1, :2])  #Ininicar um plot em branco na primeira posicao da segunda linha
+                ax3 = plt.subplot(gs[1, 2:])
+                ax4 = plt.subplot(gs[2, :2])
+                ax5 = plt.subplot(gs[2, 2:])
+                
+                ax.append(ax1)
+                ax.append(ax2)
+                ax.append(ax3)
+                ax.append(ax4)
+                ax.append(ax5)
+ 
+
+            if len(CompartmentPlots)==6:
+           #Criar um grid para as figuras usando GridSpec
+                gs = gridspec.GridSpec(nrows = 3, ncols = 4)
+
+        #Definir o tamanho do plot que sera usado para cada plot individula tem o mesmo efieto de quando passado para subplot
+                fig=plt.figure(figsize=(2*15.4,3*10))
+
+        #Definir espaco em branco entre os plots
+                gs.update(wspace = 0.55)
+                gs.update(hspace = 0.55)
+
+                ax=[]
+        #Criar o layout onde os plots serao gerados. E nessa parte que se define o grid
+                ax1 = plt.subplot(gs[0, :2]) #Ininicar um plot em branco no centro da primeira linha (0)
+                ax2 = plt.subplot(gs[0, 2:])  #Ininicar um plot em branco na primeira posicao da segunda linha
+                ax3 = plt.subplot(gs[1, :2])
+                ax4 = plt.subplot(gs[1, 2:]) #Ininicar um plot em branco no centro da primeira linha (0)
+                ax5 = plt.subplot(gs[2, :2])  #Ininicar um plot em branco na primeira posicao da segunda linha
+                ax6 = plt.subplot(gs[2, 2:])
+                
+                
+                ax.append(ax1)
+                ax.append(ax2)
+                ax.append(ax3)
+                ax.append(ax4)
+                ax.append(ax5)
+                ax.append(ax6)
+ 
+  
+          
+            for k in range(len(ax)):
+                
+            
+
+                ax[k].grid(which='major', axis='both', color='black',linewidth=1.,alpha=0.3)
+
+
+                ax[k].plot(dates[:len(PlotList[k])],PlotList[k],color=color[k], linewidth=2.5,label='Model')
+
+                if CompartmentPlots[k]=='Y':
+                    ax[k].scatter(dates[:len( self.y)], self.y,  s=18,color='black',label='Reported data',zorder=3)
+                elif CompartmentPlots[k]=='dY':
+                    ax[k].scatter(dates[:len( self.y)-1], np.diff(self.y),  s=18,color='black',label='Reported data',zorder=3)
+
+                if self.isBetaChange == True:
+            
+                    ax[k].axvline(self.dayBetaChange, 0, 600,c='r',linestyle='--',label='Beta Change')
+
+             ##################
+    
+
+
+        
+
+                ax[k].tick_params(labelsize=22)
+                #ax[k].legend(loc='center left', bbox_to_anchor=(legend_x, legend_y),fontsize=18)
+
+    
+    
+                
+            
+            
+                ax[k].set_ylabel(LabelList[k],fontsize=25)
+        
+                if InitialDate == None:
+                    ax[k].set_xlabel('Days',fontsize=25)
+    
+    
+                ax[k].xaxis.set_major_locator(plt.MaxNLocator(9))
+                plt.setp(ax[k].get_xticklabels(), rotation=25)
+
+
+                for tick in ax[k].get_xticklabels():
+                    tick.set_fontname("Arial")
+                for tick in ax[k].get_yticklabels():
+                    tick.set_fontname("Arial")  
+        
+        
+    
+            if local == None:
+                fig.suptitle('Model predictions',fontsize=35)
+            else:
+                fig.suptitle('Model predictions - '+ local,fontsize=35)
+                
+            
+
+        if SaveFile != None:
+            fig.savefig(SaveFile,bbox_inches='tight')
+        
         plt.show()
+
+
     def getCoef(self):
         #__cal_EDO(self,x,beta,gamma,mu,sigma)
         #__cal_EDO2(self,x,beta1,beta2,dayBetaChange,gamma,mu,sigma)
@@ -648,20 +1400,20 @@ class SEIR:
             print('\nModels is not fitted\n')
             return None
         if self.isCI:
-            self.lypred = self.__getConfidenceInterval(self.__bypred, length, level)
-            self.lS = self.__getConfidenceInterval(self.__bS, length, level)
-            self.lE = self.__getConfidenceInterval(self.__bE, length, level)
-            self.lI = self.__getConfidenceInterval(self.__bI, length, level)
-            self.lR = self.__getConfidenceInterval(self.__bR, length, level)
+            self.lypred = self._Models__getConfidenceInterval(self.__bypred, level)
+            self.lS = self._Models__getConfidenceInterval(self.__bS, level)
+            self.lE = self._Models__getConfidenceInterval(self.__bE, level)
+            self.lI = self._Models__getConfidenceInterval(self.__bI, level)
+            self.lR = self._Models__getConfidenceInterval(self.__bR, level)
         
-            if isBetaChange:
-                self.lDayBetaChange=self.__getConfidenceInterval(self.__bDayBetaChange, length, level)
-                self.lBeta1 = self.__getConfidenceInterval(self.__bBeta1, length, level)
-                self.lBeta2 = self.__getConfidenceInterval(self.__bBeta2, length, level)
+            if self.isBetaChange:
+                self.lDayBetaChange=self._Models__getConfidenceInterval(self.__bDayBetaChange, level)
+                self.lBeta1 = self._Models__getConfidenceInterval(self.__bBeta1, level)
+                self.lBeta2 = self._Models__getConfidenceInterval(self.__bBeta2, level)
             else:
-                self.lBeta = self.__getConfidenceInterval(self.__bBeta, length, level)
+                self.lBeta = self._Models__getConfidenceInterval(self.__bBeta, level)
             
-            self.lGamma = self.__getConfidenceInterval(self.__bGamma, length, level)
+            self.lGamma = self._Models__getConfidenceInterval(self.__bGamma, level)
             
         #Define empty lists to recive results
         self.__bypred = []
@@ -670,7 +1422,7 @@ class SEIR:
         self.__bI = []
         self.__bR = []
         
-        if isBetaChange:
+        if self.isBetaChange:
             self.__bDayBetaChange=[]
             self.__bBeta1 = []
             self.__bBeta2=[]
@@ -679,51 +1431,46 @@ class SEIR:
             
         self.__bGamma = []
         
-        casesSeries = self.__genBoot(self.y, times)
-        
+        casesSeries = self._Models__genBoot(self.y, times)
+        copia = copy.deepcopy(self)
         for i in range(0,len(casesSeries)):
-            self.fit(y = casesSeries[i], bound = self.bound ,stand_error=self.stand_error, isBetaChange=self.isBetaChange,dayBetaChange = self.dayBetaChange,particles=self.particles,itera=self.itera,c1=self.c1,c2= self.c2, w= self.w,k=self.k,p=self.p)
+            copia.fit(y = casesSeries[i], bound = self.bound ,stand_error=self.stand_error, isBetaChange=self.isBetaChange,dayBetaChange = self.dayBetaChange,particles=self.particles,itera=self.itera,c1=self.c1,c2= self.c2, w= self.w,k=self.k,norm=self.norm)
             if self.isPredict:
-                self.predict(self.predictNumDays)
+                copia.predict(self.predictNumDays)
             else:
-                self.predict(0)
+                copia.predict(0)
 
-            self.__bypred.append(self.ypred)
-            self.__bS.append(self.S)
-            self.__bE.append(self.E)
-            self.__bI.append(self.I)
-            self.__bR.append(self.R)
-            if isBetaChange:
-                self.__bbeta1.append(self.beta1)
-                self.__bbeta2.append(self.beta2)
-                self.__bDayBetaChange.append(self.dayBetaChange)
+            self.__bypred.append(copia.ypred)
+            self.__bS.append(copia.S)
+            self.__bE.append(copia.E)
+            self.__bI.append(copia.I)
+            self.__bR.append(copia.R)
+            if self.isBetaChange:
+                self.__bbeta1.append(copia.beta1)
+                self.__bbeta2.append(copia.beta2)
+                self.__bDayBetaChange.append(copia.dayBetaChange)
             else:
-                self.__bbeta.append(self.beta)
-            self.__bgamma.append(self.gamma)            
+                self.__bbeta.append(copia.beta)
+            self.__bgamma.append(copia.gamma)            
         
-        self.lypred = self.__getConfidenceInterval(self.__bypred, length, level)
-        self.lS = self.__getConfidenceInterval(self.__bS, length, level)
-        self.lE = self.__getConfidenceInterval(self.__bE, length, level)
-        self.lI = self.__getConfidenceInterval(self.__bI, length, level)
-        self.lR = self.__getConfidenceInterval(self.__bR, length, level)
+        self.lypred = self._Models__getConfidenceInterval(self.__bypred, level)
+        self.lS = self._Models__getConfidenceInterval(self.__bS, level)
+        self.lE = self._Models__getConfidenceInterval(self.__bE, level)
+        self.lI = self._Models__getConfidenceInterval(self.__bI, level)
+        self.lR = self._Models__getConfidenceInterval(self.__bR, level)
         
-        if isBetaChange:
-            self.lDayBetaChange=self.__getConfidenceInterval(self.__bDayBetaChange, length, level)
-            self.lBeta1 = self.__getConfidenceInterval(self.__bBeta1, length, level)
-            self.lBeta2 = self.__getConfidenceInterval(self.__bBeta2, length, level)
+        if self.isBetaChange:
+            self.lDayBetaChange=self._Models__getConfidenceInterval(self.__bDayBetaChange, level)
+            self.lBeta1 = self._Models__getConfidenceInterval(self.__bBeta1, level)
+            self.lBeta2 = self._Models__getConfidenceInterval(self.__bBeta2, level)
         else:
-            self.lBeta = self.__getConfidenceInterval(self.__bBeta, length, level)
+            self.lBeta = self._Models__getConfidenceInterval(self.__bBeta, level)
             
-        self.lGamma = self.__getConfidenceInterval(self.__bGamma, length, level)
+        self.lGamma = self._Models__getConfidenceInterval(self.__bGamma, level)
         self.isCI=True
     
 class SEIRHUD(Models):
     ''' SEIRHU Model'''
-    def __init__(self,tamanhoPop,numeroProcessadores=None):
-        super(SEIRHUD,self).__init__()
-        self.N = tamanhoPop
-        self.numeroProcessadores = numeroProcessadores
-        self.isRT=False
     
     def __cal_EDO(self,x,beta,gammaH,gammaU,delta,h,ia0,is0,e0):
             ND = len(x)-1
@@ -819,32 +1566,32 @@ class SEIRHUD(Models):
             elif self.isBetaChange:
                 for i in range(tam2):
                     S,E,IA,IS,H,U,R,D,Nw = self.__cal_EDO_2(x,coef[i,0],coef[i,1],coef[i,2],self.dayBetaChange,coef[i,3],coef[i,4],coef[i,5],coef[i,6],coef[i,7],coef[i,8])
-                    soma[i]= (((y-(Nw))/np.sqrt(Nw+1))**2).mean()*(1-self.pesoMorte)+(((d-(D))/np.sqrt(D+1))**2).mean()*self.pesoMorte
+                    soma[i]= (((y-(Nw))/np.sqrt(Nw+1))**2).mean()*(1-self.yWeight)+(((d-(D))/np.sqrt(D+1))**2).mean()*self.yWeight
                     soma[i] = (soma[i] + (((hos-(H))/np.sqrt(H+1))**2).mean()*self.hosWeight) if hos else soma[i]
                     soma[i] = (soma[i] + (((u-(U))/np.sqrt(U+1))**2).mean()*self.uWeight) if u else soma[i]
             else:
                 for i in range(tam2):
                     S,E,IA,IS,H,U,R,D,Nw = self.__cal_EDO(x,coef[i,0],coef[i,1],coef[i,2],coef[i,3],coef[i,4],coef[i,5],coef[i,6],coef[i,7])
-                    soma[i]= (((y-(Nw))/np.sqrt(Nw+1))**2).mean()*(1-self.pesoMorte)+(((d-(D))/np.sqrt(D+1))**2).mean()*self.pesoMorte
+                    soma[i]= (((y-(Nw))/np.sqrt(Nw+1))**2).mean()*(1-self.yWeight)+(((d-(D))/np.sqrt(D+1))**2).mean()*self.yWeight
                     soma[i] = (soma[i] + (((hos-(H))/np.sqrt(H+1))**2).mean()*self.hosWeight) if hos else soma[i]
                     soma[i] = (soma[i] + (((u-(U))/np.sqrt(U+1))**2).mean()*self.uWeight) if u else soma[i]
         else:
             if (self.isBetaChange) & (self.dayBetaChange==None):
                 for i in range(tam2):
                     S,E,IA,IS,H,U,R,D,Nw = self.__cal_EDO_2(x,coef[i,0],coef[i,1],coef[i,2],coef[i,3],coef[i,4],coef[i,5],coef[i,6],coef[i,7],coef[i,8],coef[i,9])
-                    soma[i]= ((y-(Nw))**2).mean()*(1-self.pesoMorte)+((d-(D))**2).mean()*self.pesoMorte
+                    soma[i]= ((y-(Nw))**2).mean()*(1-self.yWeight)+((d-(D))**2).mean()*self.yWeight
                     soma[i] = (soma[i] + ((hos-(H))**2).mean()*self.hosWeight) if hos else soma[i]
                     soma[i] = (soma[i] + ((u-(U))**2).mean()*self.uWeight) if u else soma[i]
             elif self.isBetaChange:
                 for i in range(tam2):
                     S,E,IA,IS,H,U,R,D,Nw = self.__cal_EDO_2(x,coef[i,0],coef[i,1],coef[i,2],self.dayBetaChange,coef[i,3],coef[i,4],coef[i,5],coef[i,6],coef[i,7],coef[i,8])
-                    soma[i]= ((y-(Nw))**2).mean()*(1-self.pesoMorte)+((d-(D))**2).mean()*self.pesoMorte
+                    soma[i]= ((y-(Nw))**2).mean()*(1-self.yWeight)+((d-(D))**2).mean()*self.yWeight
                     soma[i] = (soma[i] + ((hos-(H))**2).mean()*self.hosWeight) if hos else soma[i]
                     soma[i] = (soma[i] + ((u-(U))**2).mean()*self.uWeight) if u else soma[i]
             else:
                 for i in range(tam2):
                     S,E,IA,IS,H,U,R,D,Nw = self.__cal_EDO(x,coef[i,0],coef[i,1],coef[i,2],coef[i,3],coef[i,4],coef[i,5],coef[i,6],coef[i,7])
-                    soma[i]= ((y-(Nw))**2).mean()*(1-self.pesoMorte)+((d-(D))**2).mean()*self.pesoMorte
+                    soma[i]= ((y-(Nw))**2).mean()*(1-self.yWeight)+((d-(D))**2).mean()*self.yWeight
                     soma[i] = (soma[i] + ((hos-(H))**2).mean()*self.hosWeight) if hos else soma[i]
                     soma[i] = (soma[i] + ((u-(U))**2).mean()*self.uWeight) if u else soma[i]
         return soma
@@ -857,15 +1604,16 @@ class SEIRHUD(Models):
         
         bound => (lista_min_bound, lista_max_bound)
         '''
-        if not self.__validate(y):
+        
+        if not self._Models__validadeVar(y,'y'):
             return
-        if not self.__validate(d):
+        if not self._Models__validadeVar(d,'d'):
             return
         if hos:
-            if not self.__validate(hos):
+            if not self._Models__validadeVar(hos,'hos'):
                 return
         if u:
-            if not self.__validate(u):
+            if not self._Models__validadeVar(u,'u'):
                 return
             
         if len(y)!=len(d):
@@ -909,6 +1657,14 @@ class SEIRHUD(Models):
         self.y = y
         self.d = d
         self.x = x
+        self.stand_error = stand_error
+        self.particles = particles
+        self.itera = itera
+        self.c1 = c1
+        self.c2 = c2
+        self.w = w
+        self.k = k
+        self.norm = norm
         df = np.array(y)
         dd = np.array(d)
         dhos = np.array(hos)
@@ -933,7 +1689,7 @@ class SEIRHUD(Models):
 
                     
                 optimizer = ps.single.LocalBestPSO(n_particles=particles, dimensions=10, options=options,bounds=bound)
-            elif isBetaChange:
+            elif self.isBetaChange:
                 if len(bound[0])==8:
                     bound = (bound[0].copy(),bound[1].copy())
                     bound[0].insert(1,bound[0][0])
@@ -944,14 +1700,15 @@ class SEIRHUD(Models):
                 optimizer = ps.single.LocalBestPSO(n_particles=particles, dimensions=8, options=options,bounds=bound)
                 
         cost = pos = None
+        self.bound = bound
         #__cal_EDO(self,x,beta,gammaH,gammaU,delta,h,ia0,is0,e0)
         #__cal_EDO_2(self,x,beta1,beta2,tempo,gammaH,gammaU,delta,h,ia0,is0,e0)
-        if isBetaChange:
+        if self.isBetaChange:
             #cost, pos = optimizer.optimize(self.objectiveFunction,itera, x = x,y=df,d=dd,stand_error=stand_error,n_processes=self.numeroProcessadores, verbose = True)
-            cost, pos = optimizer.optimize(self.__objectiveFunction,itera, x = x,y=df,d=dd,hos=dhos,u=du,stand_error=stand_error,n_processes=self.numeroProcessadores)
+            cost, pos = optimizer.optimize(self.__objectiveFunction,itera, x = x,y=df,d=dd,hos=dhos,u=du,stand_error=stand_error,n_processes=self.nCores)
         else:
             #cost, pos = optimizer.optimize(self.objectiveFunction, itera, x = x,y=df,d=dd,stand_error=stand_error,n_processes=self.numeroProcessadores, verbose = True)
-            cost, pos = optimizer.optimize(self.__objectiveFunction, itera, x = x,y=df,d=dd,hos=dhos,u=du,stand_error=stand_error,n_processes=self.numeroProcessadores)
+            cost, pos = optimizer.optimize(self.__objectiveFunction, itera, x = x,y=df,d=dd,hos=dhos,u=du,stand_error=stand_error,n_processes=self.nCores)
             self.beta = pos[0]
             self.gammaH = pos[1]
             self.gammaU = pos[2]
@@ -960,11 +1717,11 @@ class SEIRHUD(Models):
             self.ia0 = pos[5]
             self.is0 = pos[6]
             self.e0 = pos[7]
-        if isBetaChange:
+        if self.isBetaChange:
             self.beta1 = pos[0]
             self.beta2 = pos[1]
             
-            if dayBetaChange==None:
+            if self.dayBetaChange==None:
                 self.dayBetaChange = pos[2]
                 self.gammaH = pos[3]
                 self.gammaU = pos[4]
@@ -1106,30 +1863,30 @@ class SEIRHUD(Models):
             print('\nModels is not fitted\n')
             return None
         if self.isCI:
-            self.lypred = self.__getConfidenceInterval(self.__bypred, length, level)
-            self.ldpred = self.__getConfidenceInterval(self.__bdpred, length, level)
-            self.lH = self.__getConfidenceInterval(self.__bH, length, level)
-            self.lS = self.__getConfidenceInterval(self.__bS, length, level)
-            self.lE = self.__getConfidenceInterval(self.__bE, length, level)
-            self.lR = self.__getConfidenceInterval(self.__bR, length, level)
-            self.lH = self.__getConfidenceInterval(self.__bH, length, level)
-            self.lU = self.__getConfidenceInterval(self.__bU, length, level)
-            self.lIA = self.__getConfidenceInterval(self.__bIA, length, level)
-            self.lIS = self.__getConfidenceInterval(self.__bIS, length, level)
+            self.lypred = self._Models__getConfidenceInterval(self.__bypred, level)
+            self.ldpred = self._Models__getConfidenceInterval(self.__bdpred, level)
+            self.lH = self._Models__getConfidenceInterval(self.__bH, level)
+            self.lS = self._Models__getConfidenceInterval(self.__bS, level)
+            self.lE = self._Models__getConfidenceInterval(self.__bE, level)
+            self.lR = self._Models__getConfidenceInterval(self.__bR, level)
+            self.lH = self._Models__getConfidenceInterval(self.__bH, level)
+            self.lU = self._Models__getConfidenceInterval(self.__bU, level)
+            self.lIA = self._Models__getConfidenceInterval(self.__bIA, level)
+            self.lIS = self._Models__getConfidenceInterval(self.__bIS, level)
         
-            if isBetaChange:
-                self.lDayBetaChange=self.__getConfidenceInterval(self.__bDayBetaChange, length, level)
-                self.lBeta1 = self.__getConfidenceInterval(self.__bBeta1, length, level)
-                self.lBeta2 = self.__getConfidenceInterval(self.__bBeta2, length, level)
+            if self.isBetaChange:
+                self.lDayBetaChange=self._Models__getConfidenceInterval(self.__bDayBetaChange, level)
+                self.lBeta1 = self._Models__getConfidenceInterval(self.__bBeta1, level)
+                self.lBeta2 = self._Models__getConfidenceInterval(self.__bBeta2, level)
             else:
-                self.lBeta = self.__getConfidenceInterval(self.__bBeta, length, level)
+                self.lBeta = self._Models__getConfidenceInterval(self.__bBeta, level)
             
-            self.lGammaH = self.__getConfidenceInterval(self.__bGammaH, length, level)
-            self.lGammaU = self.__getConfidenceInterval(self.__bGammaU, length, level)
-            self.lDelta = self.__getConfidenceInterval(self.__bDelta, length, level)
-            self.le0 = self.__getConfidenceInterval(self.__be0, length, level)
-            self.lia0 = self.__getConfidenceInterval(self.__bia0, length, level)
-            self.lis0 = self.__getConfidenceInterval(self.__bis0, length, level)
+            self.lGammaH = self._Models__getConfidenceInterval(self.__bGammaH, level)
+            self.lGammaU = self._Models__getConfidenceInterval(self.__bGammaU, level)
+            self.lDelta = self._Models__getConfidenceInterval(self.__bDelta, level)
+            self.le0 = self._Models__getConfidenceInterval(self.__be0, level)
+            self.lia0 = self._Models.__getConfidenceInterval(self.__bia0, level)
+            self.lis0 = self._Models__getConfidenceInterval(self.__bis0, level)
             
         #Define empty lists to recive results
         self.__bypred = []
@@ -1141,7 +1898,7 @@ class SEIRHUD(Models):
         self.__bU = []
         self.__bIA = []
         self.__bIS = []
-        if isBetaChange:
+        if self.isBetaChange:
             self.__bDayBetaChange=[]
             self.__bBeta1 = []
             self.__bBeta2=[]
@@ -1156,13 +1913,13 @@ class SEIRHUD(Models):
         self.__bis0 = []
 
         
-        casesSeries = self.__genBoot(self.y, times)
-        deathSeries = self.__genBoot(self.d, times)
-        hosSeries = self.__genBoot(self.hos,times) if self.hos else None
-        uSeries = self.__genBoot(self.u,times) if self.u else None
-        
+        casesSeries = self._Models__genBoot(self.y, times)
+        deathSeries = self._Models__genBoot(self.d, times)
+        hosSeries = self._Models__genBoot(self.hos,times) if self.hos else None
+        uSeries = self._Models.__genBoot(self.u,times) if self.u else None
+        copia = copy.deepcopy(self)
         for i in range(0,len(casesSeries)):
-            self.fit(y = casesSeries[i],
+            copia.fit(y = casesSeries[i],
                         d = deathSeries[i],
                         hos=hosSeries[i],
                         u = uSeries[i],
@@ -1171,74 +1928,55 @@ class SEIRHUD(Models):
                         stand_error = self.stand_error, isBetaChange = self.isBetaChange, dayBetaChange = self.dayBetaChange, particles = self.particles, itera = self.itera, c1 = self.c1, c2 = self.c2, w = self.w, k = self.k, norm = self.norm)
             
             if self.isPredict:
-                self.predict(self.predictNumDays)
+                copia.predict(self.predictNumDays)
             else:
-                self.predict(0)
-            self.__bypred.append(self.ypred)
-            self.__bdpred.append(self.dpred)
-            self.__bH.append(self.H)
-            self.__bU.append(self.U)
-            self.__bS.append(self.S)
-            self.__bE.append(self.E)
-            self.__bR.append(self.R)
-            self.__bIA.append(self.IA)
-            self.__bIS.append(self.IS)
-            if isBetaChange:
-                self.__bbeta1.append(self.beta1)
-                self.__bbeta2.append(self.beta2)
-                self.__bDayBetaChange.append(self.dayBetaChange)
+                copia.predict(0)
+            self.__bypred.append(copia.ypred)
+            self.__bdpred.append(copia.dpred)
+            self.__bH.append(copia.H)
+            self.__bU.append(copia.U)
+            self.__bS.append(copia.S)
+            self.__bE.append(copia.E)
+            self.__bR.append(copia.R)
+            self.__bIA.append(copia.IA)
+            self.__bIS.append(copia.IS)
+            if self.isBetaChange:
+                self.__bbeta1.append(copia.beta1)
+                self.__bbeta2.append(copia.beta2)
+                self.__bDayBetaChange.append(copia.dayBetaChange)
             else:
-                self.__bbeta.append(self.beta)
-            self.__bgammaH.append(self.gammaH)
-            self.__bgammaU.append(self.gammaU)
-            self.__bdelta.append(self.delta)
-            self.__be0.append(self.e0)
-            self.__bia0.append(self.ia0)
-            self.__bis0.append(self.is0)
+                self.__bbeta.append(copia.beta)
+            self.__bgammaH.append(copia.gammaH)
+            self.__bgammaU.append(copia.gammaU)
+            self.__bdelta.append(copia.delta)
+            self.__be0.append(copia.e0)
+            self.__bia0.append(copia.ia0)
+            self.__bis0.append(copia.is0)
             
         
-        self.lypred = self.__getConfidenceInterval(self.__bypred, length, level)
-        self.ldpred = self.__getConfidenceInterval(self.__bdpred, length, level)
-        self.lH = self.__getConfidenceInterval(self.__bH, length, level)
-        self.lS = self.__getConfidenceInterval(self.__bS, length, level)
-        self.lE = self.__getConfidenceInterval(self.__bE, length, level)
-        self.lR = self.__getConfidenceInterval(self.__bR, length, level)
-        self.lH = self.__getConfidenceInterval(self.__bH, length, level)
-        self.lU = self.__getConfidenceInterval(self.__bU, length, level)
-        self.lIA = self.__getConfidenceInterval(self.__bIA, length, level)
-        self.lIS = self.__getConfidenceInterval(self.__bIS, length, level)
+        self.lypred = self._Models__getConfidenceInterval(self.__bypred, level)
+        self.ldpred = self._Models__getConfidenceInterval(self.__bdpred, level)
+        self.lH = self._Models__getConfidenceInterval(self.__bH, level)
+        self.lS = self._Models__getConfidenceInterval(self.__bS, level)
+        self.lE = self._Models__getConfidenceInterval(self.__bE, level)
+        self.lR = self._Models__getConfidenceInterval(self.__bR, level)
+        self.lH = self._Models__getConfidenceInterval(self.__bH, level)
+        self.lU = self._Models__getConfidenceInterval(self.__bU, level)
+        self.lIA = self._Models__getConfidenceInterval(self.__bIA, level)
+        self.lIS = self._Models__getConfidenceInterval(self.__bIS, level)
         
-        if isBetaChange:
-            self.lDayBetaChange=self.__getConfidenceInterval(self.__bDayBetaChange, length, level)
-            self.lBeta1 = self.__getConfidenceInterval(self.__bBeta1, length, level)
-            self.lBeta2 = self.__getConfidenceInterval(self.__bBeta2, length, level)
+        if self.isBetaChange:
+            self.lDayBetaChange=self._Models__getConfidenceInterval(self.__bDayBetaChange, level)
+            self.lBeta1 = self._Models__getConfidenceInterval(self.__bBeta1, level)
+            self.lBeta2 = self._Models__getConfidenceInterval(self.__bBeta2, level)
         else:
-            self.lBeta = self.__getConfidenceInterval(self.__bBeta, length, level)
+            self.lBeta = self._Models__getConfidenceInterval(self.__bBeta, level)
             
-        self.lGammaH = self.__getConfidenceInterval(self.__bGammaH, length, level)
-        self.lGammaU = self.__getConfidenceInterval(self.__bGammaU, length, level)
-        self.lDelta = self.__getConfidenceInterval(self.__bDelta, length, level)
-        self.le0 = self.__getConfidenceInterval(self.__be0, length, level)
-        self.lia0 = self.__getConfidenceInterval(self.__bia0, length, level)
-        self.lis0 = self.__getConfidenceInterval(self.__bis0, length, level)
+        self.lGammaH = self._Models__getConfidenceInterval(self.__bGammaH, level)
+        self.lGammaU = self._Models__getConfidenceInterval(self.__bGammaU, level)
+        self.lDelta = self._Models__getConfidenceInterval(self.__bDelta, level)
+        self.le0 = self._Models__getConfidenceInterval(self.__be0, level)
+        self.lia0 = self._Models__getConfidenceInterval(self.__bia0, level)
+        self.lis0 = self._Models__getConfidenceInterval(self.__bis0, level)
         
         self.isCI=True
-        
-
-
-
-
-
-
-          
-    
-      
-       
-       
-      
-            
-
-
-        
-        
-  
