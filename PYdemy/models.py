@@ -1601,7 +1601,7 @@ class SEIRHUD(Models):
         '''
         y = numero de casos
         bound = intervalo de limite para procura de cada parametro, onde None = sem limite
-        
+        yWeight = is the weight of the death series
         bound => (lista_min_bound, lista_max_bound)
         '''
         
